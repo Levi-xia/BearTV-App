@@ -1,0 +1,78 @@
+name: Build & Release APK
+
+# 推送 v 开头的 tag（如 v0.1.0）时自动按架构分包并发布 Release。
+on:
+  push:
+    tags: ["v*"]
+
+# 同一个 tag 重复触发时，取消尚未跑完的旧构建，避免浪费 runner。
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: true
+
+# softprops/action-gh-release 创建 Release / 上传产物需要写权限。
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: 3.47.5
+          channel: stable
+          cache: true
+
+      - name: Install dependencies
+        run: flutter pub get
+
+      # Guard: secrets must never be committed. CI intentionally builds with the
+      # empty defaults from secrets.example.json, so published APKs stay clean.
+      - name: Guard against committed secrets
+        run: |
+          if git ls-files --error-unmatch secrets.json >/dev/null 2>&1; then
+            echo "::error::secrets.json is tracked by git — remove it before building."
+            exit 1
+          fi
+          echo "OK: no secrets.json in the repository"
+
+      # --split-per-abi：分别产出 armeabi-v7a / arm64-v8a / x86_64 三个 APK，
+      # 而不是一个包含全部 ABI 的巨包。release 构建已用 debug 签名，无需密钥。
+      - name: Build split APKs
+        run: flutter build apk --release --split-per-abi
+
+      # 从 pubspec.yaml 读构建号（version: 0.1.0+1 -> 0.1.0+1），仅用于展示。
+      - name: Resolve version
+        id: ver
+        run: |
+          VERSION=$(grep '^version:' pubspec.yaml | sed 's/version:[[:space:]]*//' | tr -d ' ')
+          echo "full=${VERSION}" >> "$GITHUB_OUTPUT"
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          # 直接复用刚推送的 tag（github.ref_name，如 v0.1.0）作为 Release。
+          tag_name: ${{ github.ref_name }}
+          name: 熊熊TV ${{ github.ref_name }}
+          body: |
+            Tag: ${{ github.ref_name }} ｜ pubspec: ${{ steps.ver.outputs.full }}
+            提交: ${{ github.sha }}
+            按架构分包，按需下载：
+            - `arm64-v8a`：绝大多数现代电视盒子 / 手机（首选）
+            - `armeabi-v7a`：较老的 32 位设备
+            - `x86_64`：模拟器 / x86 设备
+          files: build/app/outputs/flutter-apk/*-release.apk
+          fail_on_unmatched_files: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

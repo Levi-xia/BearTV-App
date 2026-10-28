@@ -1,0 +1,37 @@
+# Flutter/Dart
+.dart_tool/
+.packages
+build/
+.flutter-plugins
+.flutter-plugins-dependencies
+pubspec.lock
+
+# IDE
+.idea/
+.vscode/
+*.iml
+
+# OS
+.DS_Store
+
+# Local build secrets (injected at build time via --dart-define-from-file).
+# Template: secrets.example.json — copy it to secrets.json and fill in.
+secrets.json
+secrets.local.json
+
+# Android
+android/.gradle/
+android/local.properties
+android/key.properties
+*.keystore
+*.jks
+
+
+windows/
+web/
+macos/
+linux/
+ios/
+
+# python helper cache (tool/)
+__pycache__/
