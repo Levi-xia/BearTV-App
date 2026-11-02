@@ -36,8 +36,7 @@
 
 ### 播放内核
 
-- `video_player` + **fvp/libmdk** 后端（非 ExoPlayer）。
-- 起播只需缓冲 3 秒，后台最多预读 90 秒；开启解复用缓存与 HTTP 断线重连，弱网下减少卡顿。
+- `video_player` + ExoPlayer 解码，支持 HLS/m3u8/mp4。
 - 进度条同时展示播放进度与已缓冲区间。
 
 ### 弹幕
@@ -71,7 +70,7 @@
 ```text
 TMDB 目录 / 搜索 ──► 播放页 ──► 按片名并发搜索已启用采集源
                                    │
-                                   ├─ 命中 → 解析线路与选集 → fvp 播放
+                                   ├─ 命中 → 解析线路与选集 → 播放
                                    └─ 未命中 → 提示切换资源或添加源
 ```
 
@@ -206,7 +205,7 @@ git push origin v0.1.0
 
 ```text
 lib/
-├── main.dart                 # fvp 注册、ImageCache 调优、启动
+├── main.dart                 # ImageCache 调优、启动
 ├── app.dart                  # 根组件、Shell、全局按键、页面切换
 ├── core/                     # AppController、弹幕/直播控制器、主题、编译期配置
 ├── data/
@@ -217,7 +216,7 @@ lib/
 │   ├── history_store.dart    # Hive 续播记录
 │   ├── settings_store.dart   # 配置读写
 │   └── kv_store.dart         # SharedPreferences 适配
-├── player/                   # PlayerController 抽象 + VideoAdapter(fvp)
+├── player/                   # PlayerController 抽象 + VideoAdapter(video_player)
 ├── screens/                  # 首页、播放、搜索、直播、设置、启动
 └── widgets/                  # 焦点、卡片、弹幕层、屏幕键盘等
 ```
