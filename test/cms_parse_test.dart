@@ -127,4 +127,30 @@ void main() {
       expect(detail.episodeCount, 2);
     });
   });
+
+  group('episode labels', () {
+    test('keeps variety episode names verbatim', () {
+      const eps = [
+        Episode(title: '第1期：初见', url: 'http://x/1.m3u8'),
+        Episode(title: '第2期：重逢', url: 'http://x/2.m3u8'),
+      ];
+      expect(episodeUnit(eps), '期');
+      expect(episodeLabel(eps[0].title, 0, unit: episodeUnit(eps)), '第1期：初见');
+    });
+
+    test('normalises bare numbers and empty titles', () {
+      expect(episodeLabel('1', 0), '第 1 集');
+      expect(episodeLabel('', 3), '第 4 集');
+      expect(episodeLabel(null, 0, unit: '期'), '第 1 期');
+    });
+
+    test('drama lines keep 集 as the unit', () {
+      const eps = [
+        Episode(title: '第01集', url: 'http://x/1.m3u8'),
+        Episode(title: '第02集', url: 'http://x/2.m3u8'),
+      ];
+      expect(episodeUnit(eps), '集');
+      expect(episodeLabel(eps[0].title, 0), '第01集');
+    });
+  });
 }

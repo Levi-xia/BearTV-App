@@ -67,6 +67,34 @@ class Episode {
   const Episode({required this.title, required this.url});
 }
 
+final RegExp _bareNumber = RegExp(r'^\d{1,4}$');
+
+/// Numbering unit for a line of episodes: variety shows ship titles like
+/// `第3期`, dramas use `第3集`. Returns `期` only when the majority of titles
+/// carry that signal, otherwise `集`.
+String episodeUnit(List<Episode> episodes) {
+  if (episodes.isEmpty) return '集';
+  var periods = 0;
+  for (final ep in episodes) {
+    if (ep.title.contains('期')) periods++;
+  }
+  return periods * 2 > episodes.length ? '期' : '集';
+}
+
+/// Label for one 选集 cell. Sources are inconsistent: dramas usually send
+/// `第01集`, variety shows send `第1期` or a full episode name, and some send
+/// only a bare number. Keep meaningful titles verbatim, expand bare numbers
+/// with [unit], and fall back to the 1-based index when the title is empty.
+String episodeLabel(String? title, int index, {String unit = '集'}) {
+  final t = (title ?? '').trim();
+  if (t.isEmpty) return '第 ${index + 1} $unit';
+  if (_bareNumber.hasMatch(t)) {
+    final n = int.tryParse(t);
+    if (n != null && n > 0) return '第 $n $unit';
+  }
+  return t;
+}
+
 /// A play line (播放线路) — an ordered list of episodes.
 class PlayLine {
   final String name;

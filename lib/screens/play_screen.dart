@@ -10,6 +10,7 @@ import '../core/app_scope.dart';
 import '../core/theme.dart';
 import '../data/danmaku/danmaku_models.dart';
 import '../data/nav_config.dart';
+import '../data/vod/cms_models.dart';
 import '../player/player_controller.dart';
 import '../player/video_adapter.dart';
 import '../widgets/chips.dart';
@@ -307,7 +308,11 @@ class _PlayerControls extends StatelessWidget {
       builder: (context, v, _) {
         final eps = app.currentEpisodes;
         final epTitle = (app.episodeIndex >= 0 && app.episodeIndex < eps.length)
-            ? eps[app.episodeIndex].title
+            ? episodeLabel(
+                eps[app.episodeIndex].title,
+                app.episodeIndex,
+                unit: eps[app.episodeIndex].title.contains('期') ? '期' : '集',
+              )
             : '';
         final srcName = app.currentDetail?.sourceName ?? '';
         final speedLabel = v.speed == 1.0 ? '' : ' · ${v.speed}x';
@@ -704,13 +709,13 @@ class _Episodes extends StatelessWidget {
               const Text('选集',
                   style: TextStyle(fontSize: 24, fontWeight: FontWeight.w700, color: AppColors.text, fontFamilyFallback: kFontFallback)),
               const SizedBox(width: 14),
-              Text('共 ${eps.length} 集',
+              Text('共 ${eps.length} ${episodeUnit(eps)}',
                   style: const TextStyle(fontSize: 15, color: AppColors.textDim, fontFamilyFallback: kFontFallback)),
             ],
           ),
           const SizedBox(height: 16),
           _EpisodePager(
-            count: eps.length,
+            episodes: eps,
             currentIndex: app.episodeIndex,
             onPick: app.selectEpisode,
             spacing: 12,
@@ -960,10 +965,10 @@ class _MenuEpisodes extends StatelessWidget {
       crossAxisAlignment: CrossAxisAlignment.start,
       mainAxisSize: MainAxisSize.min,
       children: [
-        _Label('选集 · 共 ${eps.length} 集'),
+        _Label('选集 · 共 ${eps.length} ${episodeUnit(eps)}'),
         const SizedBox(height: 10),
         _EpisodePager(
-          count: eps.length,
+          episodes: eps,
           currentIndex: app.episodeIndex,
           onPick: app.selectEpisode,
           spacing: 10,
@@ -986,13 +991,13 @@ const int _kEpisodesPerPage = 100;
 /// selector to) the page holding the currently-playing episode.
 class _EpisodePager extends StatefulWidget {
   const _EpisodePager({
-    required this.count,
+    required this.episodes,
     required this.currentIndex,
     required this.onPick,
     required this.spacing,
   });
 
-  final int count;
+  final List<Episode> episodes;
   final int currentIndex;
   final void Function(int index) onPick;
   final double spacing;
@@ -1005,7 +1010,7 @@ class _EpisodePagerState extends State<_EpisodePager> {
   late int _page = widget.currentIndex ~/ _kEpisodesPerPage;
   // Tracks the episode count last reflected in [_page]; a change means a new
   // show was loaded, so the view re-syncs to the current episode's page.
-  late int _syncedCount = widget.count;
+  late int _syncedCount = widget.episodes.length;
   // Horizontal scroller for the range chips. We drive it directly (rather than
   // Scrollable.ensureVisible) so revealing the active chip only ever moves THIS
   // row — never the enclosing vertical page / fullscreen menu scroll, which
@@ -1048,16 +1053,17 @@ class _EpisodePagerState extends State<_EpisodePager> {
   @override
   Widget build(BuildContext context) {
     // A new show (different episode count) resets to the current episode's page.
-    if (_syncedCount != widget.count) {
-      _syncedCount = widget.count;
+    if (_syncedCount != widget.episodes.length) {
+      _syncedCount = widget.episodes.length;
       _page = widget.currentIndex ~/ _kEpisodesPerPage;
       _didRevealChip = false;
       WidgetsBinding.instance.addPostFrameCallback((_) => _revealActiveChip());
     }
-    final pageCount = (widget.count / _kEpisodesPerPage).ceil();
+    final pageCount = (widget.episodes.length / _kEpisodesPerPage).ceil();
     final page = _page.clamp(0, pageCount - 1);
     final start = page * _kEpisodesPerPage;
-    final end = (start + _kEpisodesPerPage).clamp(0, widget.count);
+    final end = (start + _kEpisodesPerPage).clamp(0, widget.episodes.length);
+    final unit = episodeUnit(widget.episodes);
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -1095,7 +1101,7 @@ class _EpisodePagerState extends State<_EpisodePager> {
               SizedBox(
                 width: 150,
                 child: EpisodeCell(
-                  number: i + 1,
+                  label: episodeLabel(widget.episodes[i].title, i, unit: unit),
                   current: i == widget.currentIndex,
                   onPressed: () => widget.onPick(i),
                 ),
@@ -1108,7 +1114,7 @@ class _EpisodePagerState extends State<_EpisodePager> {
 
   String _rangeLabel(int p) {
     final first = p * _kEpisodesPerPage + 1;
-    final last = ((p + 1) * _kEpisodesPerPage).clamp(0, widget.count);
+    final last = ((p + 1) * _kEpisodesPerPage).clamp(0, widget.episodes.length);
     return '$first-$last';
   }
 }

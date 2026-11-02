@@ -127,12 +127,12 @@ class ActionButton extends StatelessWidget {
 class EpisodeCell extends StatelessWidget {
   const EpisodeCell({
     super.key,
-    required this.number,
+    required this.label,
     required this.current,
     required this.onPressed,
   });
 
-  final int number;
+  final String label;
   final bool current;
   final VoidCallback onPressed;
 
@@ -156,7 +156,10 @@ class EpisodeCell extends StatelessWidget {
             alignment: Alignment.center,
             decoration: focused ? FocusFx.pill(focused, radius: 13) : base,
             child: Text(
-              current ? '第 $number 集 ▶' : '第 $number 集',
+              current ? '$label ▶' : label,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              textAlign: TextAlign.center,
               style: TextStyle(
                 fontSize: 17,
                 color: focused
