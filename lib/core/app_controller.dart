@@ -53,7 +53,9 @@ class AppController extends ChangeNotifier {
     DanmakuController? danmaku,
     IptvController? iptv,
     LiveProbeController? liveProbe,
+    DateTime Function()? clock,
   })  : _injectedRepo = repository,
+        _clock = clock ?? DateTime.now,
         player = player ?? MockPlayerController(),
         history = history ?? HistoryStore(),
         settings = settings ?? SettingsStore(),
@@ -64,6 +66,12 @@ class AppController extends ChangeNotifier {
     // the initializer list above.
     this.liveProbe = liveProbe ?? LiveProbeController(client: this.iptv.client);
   }
+
+  /// Test seam: the wall clock used for progress-save throttling, so a test can
+  /// simulate a slow stream open without sleeping.
+  final DateTime Function() _clock;
+
+  int _nowMs() => _clock().millisecondsSinceEpoch;
 
   /// Test seam: a repository passed in directly bypasses the settings/key flow.
   final ContentRepository? _injectedRepo;
@@ -705,7 +713,10 @@ class AppController extends ChangeNotifier {
     resolving = false;
     notifyListeners();
 
-    _persistHistory(positionMs: resumeMs);
+    // Deliberately NO history write here: merely opening a record (then
+    // backing out while it loads) must leave the saved 第N集 · mm:ss intact.
+    // The record is only rewritten once the stream is ready (see [_onTick]) or
+    // on a guarded exit (see [_handleBack]).
     await _playCurrent(resumeMs: resumeMs);
     _loadResourceOptions(); // background: build the switch-resource list
   }
@@ -790,7 +801,7 @@ class AppController extends ChangeNotifier {
     resolving = false;
     notifyListeners();
 
-    _persistHistory(positionMs: resumeMs);
+    // No history write while only opening the page — see [openTitle].
     await _playCurrent(resumeMs: resumeMs);
     _loadResourceOptions();
   }
@@ -799,13 +810,19 @@ class AppController extends ChangeNotifier {
   Future<void> _playCurrent({int resumeMs = 0}) async {
     _introSkipHandled = false;
     _advancing = false;
-    _lastSaveMs = DateTime.now().millisecondsSinceEpoch;
-    final ep = _episodeAt(lineIndex, episodeIndex);
-    // Cleared here and re-armed from [_onTick] only once the stream is actually
-    // ready — handing a dead URL to the player must not count as "played".
+    // Not "playing" until the stream is ready AND the resume seek has landed:
+    // until then the player reports position 0, and persisting that would wipe
+    // the very progress we just resumed from.
     _playStarted = false;
+    _lastSaveMs = _nowMs();
+    final ep = _episodeAt(lineIndex, episodeIndex);
     await player.open(ep?.url);
     if (resumeMs > 0) await player.seekTo(Duration(milliseconds: resumeMs));
+    // Arm progress saving only once the reported position means something.
+    if (player.value.ready) {
+      _playStarted = true;
+      _lastSaveMs = _nowMs(); // start the throttle window after the seek
+    }
     await player.setSpeed(speed);
     await player.play();
     // Best-effort danmaku match for this episode (never blocks playback).
@@ -947,7 +964,6 @@ class AppController extends ChangeNotifier {
       return;
     final v = player.value;
     if (!v.ready) return;
-    _playStarted = true;
     final pos = v.position;
     final dur = v.duration;
 
@@ -968,8 +984,10 @@ class AppController extends ChangeNotifier {
       }
     }
 
-    final now = DateTime.now().millisecondsSinceEpoch;
-    if (dur.inMilliseconds > 0 && now - _lastSaveMs > 5000) {
+    final now = _nowMs();
+    // [_playStarted] guards the window between "the stream reported ready" and
+    // "the resume seek landed" — writing there would persist 0:00.
+    if (_playStarted && dur.inMilliseconds > 0 && now - _lastSaveMs > 5000) {
       _lastSaveMs = now;
       _persistHistory(
           positionMs: pos.inMilliseconds, durationMs: dur.inMilliseconds);
