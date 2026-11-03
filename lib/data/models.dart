@@ -39,6 +39,26 @@ class VodItem {
   /// Stable key across movie/tv id collisions.
   String get key => '$mediaType:$id';
 
+  /// Copy with a different [genre]. Only used for CMS-direct items
+  /// (`mediaType` starts with `cms:`), where [genre] carries the source name
+  /// and has to follow a 切换资源 — see `AppController._itemWithSource`.
+  VodItem withGenre(String genre) => VodItem(
+        id: id,
+        mediaType: mediaType,
+        title: title,
+        en: en,
+        genre: genre,
+        desc: desc,
+        year: year,
+        score: score,
+        ep: ep,
+        hd: hd,
+        neu: neu,
+        bgUrl: bgUrl,
+        cardUrl: cardUrl,
+        posterUrl: posterUrl,
+      );
+
   Map<String, dynamic> toJson() => {
         'id': id,
         'mediaType': mediaType,

@@ -233,6 +233,12 @@ class AppController extends ChangeNotifier {
   bool _introSkipHandled = false;
   bool _advancing = false;
 
+  /// True once the player reports the current episode as ready (armed from
+  /// [_onTick]). Backing out while the title is still resolving, or after the
+  /// stream failed to open, must NOT touch the saved record — see
+  /// [_handleBack].
+  bool _playStarted = false;
+
   /// The feed for the visible tab (always non-null after [setTab]).
   TabFeed get feed => _feeds[currentTab]!;
 
@@ -278,6 +284,19 @@ class AppController extends ChangeNotifier {
   }
 
   List<Episode> get currentEpisodes => _episodesFor(lineIndex);
+
+  /// CMS-direct items (`openCmsHit`) have no TMDB genre: their [VodItem.genre]
+  /// carries the source name instead. After a 切换资源 that label has to follow
+  /// the new source, otherwise the play page's meta row and the history card
+  /// keep advertising the first source ever used. TMDB items keep their real
+  /// genre untouched. The [VodItem.key] is unaffected, so history/resume stay
+  /// keyed to the same title.
+  VodItem _itemWithSource(VodItem item, String? sourceName) {
+    if (sourceName == null || sourceName.isEmpty) return item;
+    if (!item.mediaType.startsWith('cms:')) return item;
+    if (item.genre == sourceName) return item;
+    return item.withGenre(sourceName);
+  }
 
   Episode? _episodeAt(int line, int ep) {
     final eps = _episodesFor(line);
@@ -606,6 +625,7 @@ class AppController extends ChangeNotifier {
   /// and auto-play the best match (resuming a saved position when available).
   Future<void> openTitle(VodItem item) async {
     final token = ++_playToken;
+    _playStarted = false;
     currentItem = item;
     // Remember where we came from so Back leaves the player back to the right
     // page (search keeps its query + results; home restores the rail card).
@@ -671,6 +691,9 @@ class AppController extends ChangeNotifier {
     }
 
     currentDetail = detail;
+    // Keep a CMS-direct item's source label in step with the resource that
+    // actually resolved (title re-resolve may land on a different source).
+    currentItem = _itemWithSource(item, detail.sourceName);
     // Resume only when the resolved resource matches the saved one.
     var resumeMs = 0;
     if (entry != null && entry.resourceKey == detail.key) {
@@ -717,6 +740,7 @@ class AppController extends ChangeNotifier {
   /// builds the cross-source 切换资源 list by title.
   Future<void> openCmsHit(SearchHit hit) async {
     final token = ++_playToken;
+    _playStarted = false;
     final item = _cmsItemFor(hit);
     currentItem = item;
     _playReturnPage = page == AppPage.search ? AppPage.search : AppPage.home;
@@ -754,6 +778,7 @@ class AppController extends ChangeNotifier {
     }
 
     currentDetail = detail;
+    currentItem = _itemWithSource(item, detail.sourceName);
     // Resume only when re-entering the exact same resource we recorded.
     var resumeMs = 0;
     if (entry != null && entry.resourceKey == detail.key) {
@@ -776,6 +801,9 @@ class AppController extends ChangeNotifier {
     _advancing = false;
     _lastSaveMs = DateTime.now().millisecondsSinceEpoch;
     final ep = _episodeAt(lineIndex, episodeIndex);
+    // Cleared here and re-armed from [_onTick] only once the stream is actually
+    // ready — handing a dead URL to the player must not count as "played".
+    _playStarted = false;
     await player.open(ep?.url);
     if (resumeMs > 0) await player.seekTo(Duration(milliseconds: resumeMs));
     await player.setSpeed(speed);
@@ -850,6 +878,8 @@ class AppController extends ChangeNotifier {
       return;
     }
     currentDetail = detail;
+    final item = currentItem;
+    if (item != null) currentItem = _itemWithSource(item, detail.sourceName);
     lineIndex = 0;
     final eps = _episodesFor(0).length;
     episodeIndex = eps == 0 ? 0 : episodeIndex.clamp(0, eps - 1);
@@ -917,6 +947,7 @@ class AppController extends ChangeNotifier {
       return;
     final v = player.value;
     if (!v.ready) return;
+    _playStarted = true;
     final pos = v.position;
     final dur = v.duration;
 
@@ -953,7 +984,9 @@ class AppController extends ChangeNotifier {
     final d = currentDetail;
     final prev = history.entryFor(item.key);
     history.put(HistoryEntry(
-      item: item,
+      // A CMS-direct item's genre is its source name; persist the currently
+      // playing source so the history card's meta line matches the record.
+      item: _itemWithSource(item, d?.sourceName),
       sourceId: d?.sourceId ?? prev?.sourceId ?? '',
       sourceName: d?.sourceName ?? prev?.sourceName ?? '',
       vodId: d?.vodId ?? prev?.vodId ?? '',
@@ -1104,10 +1137,15 @@ class AppController extends ChangeNotifier {
     // else — otherwise Back would fall through to the leave-tab / exit flow.
     if (liveMenuBackInterceptor?.call() ?? false) return;
     if (page == AppPage.play) {
-      _persistHistory(
-        positionMs: player.value.position.inMilliseconds,
-        durationMs: player.value.duration.inMilliseconds,
-      );
+      // Only a playback that actually started may rewrite the record. Backing
+      // out while the title is still resolving (or after the open failed) used
+      // to persist episode 0 / position 0 and wipe the saved 第N集 · mm:ss.
+      if (_playStarted) {
+        _persistHistory(
+          positionMs: player.value.position.inMilliseconds,
+          durationMs: player.value.duration.inMilliseconds,
+        );
+      }
       _stopPlayback();
       if (_playReturnPage == AppPage.search) {
         // Return to the search page with its query + results intact (the
@@ -1155,6 +1193,7 @@ class AppController extends ChangeNotifier {
   /// a slow title-resolve can't start playing after we've already left.
   void _stopPlayback() {
     _playToken++; // invalidate pending openTitle/switchResource async work
+    _playStarted = false;
     resolving = false;
     danmaku.clear();
     player.pause();
