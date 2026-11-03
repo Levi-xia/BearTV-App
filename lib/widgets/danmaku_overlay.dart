@@ -42,9 +42,19 @@ class _Raster {
 /// pure function of playback time, so seek / pause / speed changes are correct
 /// for free (a big seek just resets the flying set and re-seeks the cursor).
 class DanmakuOverlay extends StatefulWidget {
-  const DanmakuOverlay({super.key, required this.player, required this.danmaku});
+  const DanmakuOverlay({
+    super.key,
+    required this.player,
+    required this.danmaku,
+    this.clock,
+  });
+
   final PlayerController player;
   final DanmakuController danmaku;
+
+  /// Wall clock used to interpolate the playback position between player
+  /// reports. Injectable so tests can drive it in lockstep with the ticker.
+  final DateTime Function()? clock;
 
   @override
   State<DanmakuOverlay> createState() => _DanmakuOverlayState();
@@ -64,6 +74,9 @@ class _DanmakuOverlayState extends State<DanmakuOverlay>
   // larger drift just bleeds off over several updates.
   static const double _kClockSlew = 0.1;
   static const double _kMaxSlewStep = 0.02; // seconds per update
+  // A position change bigger than this, measured between two consecutive player
+  // reports, is a seek / new stream rather than playback drift.
+  static const double _kJumpSeconds = 3.0;
 
   late final Ticker _ticker;
   final ValueNotifier<int> _repaint = ValueNotifier<int>(0);
@@ -82,6 +95,10 @@ class _DanmakuOverlayState extends State<DanmakuOverlay>
   // Playback-time interpolation base (drives spawn scheduling only).
   double _baseT = 0;
   int _baseWallMs = 0;
+  // Last position the player itself reported. Comparing a report against this —
+  // instead of against our interpolated clock — is what separates a real seek
+  // from a rebuffer. See [_onPlayer].
+  double? _lastReportT;
   bool _playing = false;
   double _speed = 1.0;
   double _t = 0; // current interpolated playback second (follows video speed)
@@ -144,17 +161,36 @@ class _DanmakuOverlayState extends State<DanmakuOverlay>
   void _onPlayer() {
     final v = widget.player.value;
     final newT = v.position.inMilliseconds / 1000.0;
-    final nowMs = DateTime.now().millisecondsSinceEpoch;
+    final nowMs = _wallMs();
     // What our smooth clock currently reads (before applying this update).
     final predicted =
         _playing ? _baseT + (nowMs - _baseWallMs) / 1000.0 * _speed : _baseT;
     final drift = newT - predicted;
-    if (drift.abs() > 1.0) {
-      // Non-linear jump (seek / long stall) → drop the flying set, re-seek,
-      // and hard-snap the clock to the player.
+
+    // A discontinuity is measured against the player's OWN previous report, not
+    // against our interpolated clock. A rebuffer — or a stream that decodes
+    // slower than wall time on a weak box — makes the reported position repeat
+    // or creep while our clock keeps running, so the *drift* grows without the
+    // playback ever jumping. Calling that a seek cleared every flying comment,
+    // which is why danmaku died a fraction into their travel and re-entered
+    // from the right edge over and over. Only a real jump relocates time.
+    final last = _lastReportT;
+    final jumped = last == null || (newT - last).abs() > _kJumpSeconds;
+    _lastReportT = newT;
+
+    if (jumped) {
+      // Seek / new stream: the comments on screen belong to another moment.
       _resetActive();
       _cursor = _seekCursor(newT);
       _baseT = newT;
+    } else if (drift.abs() > 1.0) {
+      // Clock slipped while the stream stayed put: re-anchor the spawn clock and
+      // leave the flying set untouched. The cursor only ever moves forward, so
+      // nothing already shown is replayed; while the reported position trails,
+      // no new comment spawns until playback catches up.
+      _baseT = newT;
+      final c = _seekCursor(newT);
+      if (c > _cursor) _cursor = c;
     } else {
       // Normal playback: the player reports coarse, jittery positions (whole
       // seconds from the mock; quantized/laggy from a real backend). Snapping
@@ -187,10 +223,14 @@ class _DanmakuOverlayState extends State<DanmakuOverlay>
     _maybeToggleTicker();
   }
 
+  int _wallMs() =>
+      (widget.clock ?? DateTime.now)().millisecondsSinceEpoch;
+
   void _syncFromPlayer() {
     final v = widget.player.value;
     _baseT = v.position.inMilliseconds / 1000.0;
-    _baseWallMs = DateTime.now().millisecondsSinceEpoch;
+    _lastReportT = _baseT;
+    _baseWallMs = _wallMs();
     _playing = v.playing;
     _speed = v.speed <= 0 ? 1.0 : v.speed;
     _t = _baseT;
@@ -202,7 +242,7 @@ class _DanmakuOverlayState extends State<DanmakuOverlay>
         _cfg?.enabled == true && widget.danmaku.items.isNotEmpty;
     final shouldRun = enabled && _playing;
     if (shouldRun && !_ticker.isActive) {
-      final now = DateTime.now().millisecondsSinceEpoch;
+      final now = _wallMs();
       _baseWallMs = now; // no paused-time jump
       _animWallMs = now.toDouble(); // don't fold the pause into the scroll timeline
       _tickerEpochMs = now.toDouble(); // start() resets elapsed to ~0
@@ -230,6 +270,10 @@ class _DanmakuOverlayState extends State<DanmakuOverlay>
     }
     return lo;
   }
+
+  /// Test-only: how many comments are on screen right now.
+  @visibleForTesting
+  int get debugActiveCount => _active.length;
 
   void _resetActive() {
     _active.clear();
