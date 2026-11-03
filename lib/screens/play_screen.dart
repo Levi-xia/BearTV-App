@@ -726,9 +726,10 @@ class _Episodes extends StatelessWidget {
   }
 }
 /// Remote-first fullscreen layer. A single [Focus] captures the D-pad:
-/// OK=play/pause, ←/→=seek ∓10s (with OSD), ↑=settings menu, ↓=show progress,
-/// BACK=exit fullscreen. While the menu is open, arrow keys fall through so the
-/// menu chips can be traversed.
+/// OK=play/pause, ←/→=seek ∓10s (with OSD), ↑=settings menu, ↓=选集 drawer
+/// (falls back to the progress OSD when there is nothing to pick), BACK=exit
+/// fullscreen. While an overlay is open, arrow keys fall through so its chips
+/// can be traversed.
 class _FullscreenPlayer extends StatefulWidget {
   const _FullscreenPlayer();
 
@@ -738,7 +739,13 @@ class _FullscreenPlayer extends StatefulWidget {
 
 class _FullscreenPlayerState extends State<_FullscreenPlayer> {
   bool _menuOpen = false;
+  // 选集 drawer, opened by ↓ — the highest-frequency action while watching.
+  bool _episodesOpen = false;
   bool _showProgress = false;
+  // Focus anchor for this layer. Overlays push focus into themselves, so when
+  // one closes (and unmounts its focused chip) focus goes back here, letting
+  // ←/→ seek and OK pause straight away instead of drifting onto page widgets.
+  final FocusNode _rootNode = FocusNode(debugLabel: 'fullscreenPlayer');
   String? _osd;
   Timer? _osdTimer;
   Timer? _progressTimer;
@@ -759,13 +766,20 @@ class _FullscreenPlayerState extends State<_FullscreenPlayer> {
     super.initState();
     _app = AppScope.read(context);
     _backIntercept = () {
-      if (_menuOpen) {
-        setState(() => _menuOpen = false);
-        return true;
-      }
-      return false;
+      if (!_menuOpen && !_episodesOpen) return false;
+      _closeOverlays();
+      return true;
     };
     _app.fullscreenBackInterceptor = _backIntercept;
+  }
+
+  /// Closes whichever overlay is open and hands focus back to the player.
+  void _closeOverlays() {
+    setState(() {
+      _menuOpen = false;
+      _episodesOpen = false;
+    });
+    _rootNode.requestFocus();
   }
 
   void _flashOsd(String text) {
@@ -791,6 +805,7 @@ class _FullscreenPlayerState extends State<_FullscreenPlayer> {
     }
     _osdTimer?.cancel();
     _progressTimer?.cancel();
+    _rootNode.dispose();
     super.dispose();
   }
 
@@ -802,9 +817,9 @@ class _FullscreenPlayerState extends State<_FullscreenPlayer> {
     final k = event.logicalKey;
 
     // Back is handled globally (PopScope / shortcuts → the deduped Back path),
-    // so a single press can't be double-counted here. When the menu is open we let
-    // all keys fall through so its chips can traverse / activate.
-    if (_menuOpen) return KeyEventResult.ignored;
+    // so a single press can't be double-counted here. When an overlay is open we
+    // let all keys fall through so its chips can traverse / activate.
+    if (_menuOpen || _episodesOpen) return KeyEventResult.ignored;
 
     if (k == LogicalKeyboardKey.arrowLeft) {
       app.seekBy(const Duration(seconds: -10));
@@ -819,11 +834,24 @@ class _FullscreenPlayerState extends State<_FullscreenPlayer> {
       return KeyEventResult.handled;
     }
     if (k == LogicalKeyboardKey.arrowUp) {
-      setState(() => _menuOpen = true);
+      setState(() {
+        _episodesOpen = false;
+        _menuOpen = true;
+      });
       return KeyEventResult.handled;
     }
     if (k == LogicalKeyboardKey.arrowDown) {
-      _flashProgress();
+      // 选集 gets ↓ because it is the most frequent in-playback action; 播放设置
+      // keeps ↑. With nothing to pick (a movie, or a source still resolving)
+      // fall back to the progress OSD so ↓ is never a dead key.
+      if (app.currentEpisodes.length > 1) {
+        setState(() {
+          _menuOpen = false;
+          _episodesOpen = true;
+        });
+      } else {
+        _flashProgress();
+      }
       return KeyEventResult.handled;
     }
     if (k == LogicalKeyboardKey.select ||
@@ -842,6 +870,7 @@ class _FullscreenPlayerState extends State<_FullscreenPlayer> {
     final app = AppScope.of(context);
     return Focus(
       autofocus: true,
+      focusNode: _rootNode,
       onKeyEvent: _onKey,
       child: ColoredBox(
         color: const Color(0xFF000000),
@@ -869,7 +898,8 @@ class _FullscreenPlayerState extends State<_FullscreenPlayer> {
                   ),
                 ),
               ),
-            if (_menuOpen) _FullscreenMenu(onClose: () => setState(() => _menuOpen = false)),
+            if (_menuOpen) _FullscreenMenu(onClose: _closeOverlays),
+            if (_episodesOpen) _EpisodeSheet(onClose: _closeOverlays),
           ],
         ),
       ),
@@ -920,7 +950,7 @@ class _FullscreenMenuState extends State<_FullscreenMenu> {
               const Text('播放设置',
                   style: TextStyle(fontSize: 24, fontWeight: FontWeight.w700, color: AppColors.text, fontFamilyFallback: kFontFallback)),
               const SizedBox(height: 6),
-              const Text('上键呼出 · 返回关闭',
+              const Text('上键呼出 · 下键选集 · 返回关闭',
                   style: TextStyle(fontSize: 14, color: AppColors.textDim, fontFamilyFallback: kFontFallback)),
               const SizedBox(height: 20),
               if (detail != null && detail.playLines.length > 1) ...[
@@ -944,7 +974,6 @@ class _FullscreenMenuState extends State<_FullscreenMenu> {
               const _SpeedSection(),
               const _SkipSection(),
               const _DanmakuSection(),
-              const _MenuEpisodes(),
             ],
           ),
         ),
@@ -952,28 +981,150 @@ class _FullscreenMenuState extends State<_FullscreenMenu> {
     );
   }
 }
-/// Compact 选集 grid used inside the fullscreen menu.
-class _MenuEpisodes extends StatelessWidget {
-  const _MenuEpisodes();
+/// 选集 drawer, opened by ↓ in fullscreen. It slides up from the bottom edge
+/// (instead of docking left/right like [_FullscreenMenu]) because the grid is
+/// wide and the eye should stay on the video right above it.
+///
+/// The top row carries a 播放下一集 shortcut. It is shown only while
+/// [AppController.hasNextEpisode] holds — a movie, a single-episode source and
+/// the last episode of a series all hide it, so the button never offers
+/// something that cannot play. It takes focus on open, making "↓ then OK" the
+/// two-press way to continue watching.
+class _EpisodeSheet extends StatefulWidget {
+  const _EpisodeSheet({required this.onClose});
+  final VoidCallback onClose;
+
+  @override
+  State<_EpisodeSheet> createState() => _EpisodeSheetState();
+}
+
+class _EpisodeSheetState extends State<_EpisodeSheet> {
+  final FocusNode _nextNode = FocusNode(debugLabel: 'episodeSheetNext');
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      if (AppScope.read(context).hasNextEpisode) {
+        _nextNode.requestFocus();
+      } else {
+        // No shortcut: push focus into the grid (same trick as the settings
+        // panel) so arrows operate the sheet rather than the page behind it.
+        FocusScope.of(context).nextFocus();
+      }
+    });
+  }
+
+  @override
+  void dispose() {
+    _nextNode.dispose();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
     final app = AppScope.of(context);
     final eps = app.currentEpisodes;
-    if (eps.length <= 1) return const SizedBox.shrink();
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        _Label('选集 · 共 ${eps.length} ${episodeUnit(eps)}'),
-        const SizedBox(height: 10),
-        _EpisodePager(
-          episodes: eps,
-          currentIndex: app.episodeIndex,
-          onPick: app.selectEpisode,
-          spacing: 10,
+    final unit = episodeUnit(eps);
+    final hasNext = app.hasNextEpisode;
+    final nextIndex = app.episodeIndex + 1;
+    // "第 6 集" already says it is the next one; only sources that send a real
+    // episode name get the extra text, so the label never reads 下一集 · 第6集.
+    final nextLabel = hasNext
+        ? episodeLabel(eps[nextIndex].title, nextIndex, unit: unit)
+        : '';
+    final nextHint = !hasNext
+        ? ''
+        : nextLabel == '第 ${nextIndex + 1} $unit'
+            ? '下一集'
+            : '下一集 · $nextLabel';
+
+    return Align(
+      alignment: Alignment.bottomCenter,
+      // One-shot slide-up: the drawer is inserted only while open, so animating
+      // the entry (translate 1 → 0) is enough; closing just unmounts it.
+      child: TweenAnimationBuilder<double>(
+        tween: Tween(begin: 1, end: 0),
+        duration: const Duration(milliseconds: 240),
+        curve: kEase,
+        builder: (context, t, child) => FractionalTranslation(
+          translation: Offset(0, t),
+          child: child,
         ),
-      ],
+        child: Container(
+          width: double.infinity,
+          constraints: BoxConstraints(
+            maxHeight: MediaQuery.sizeOf(context).height * 0.68,
+          ),
+          padding: const EdgeInsets.fromLTRB(AppDims.pad, 26, AppDims.pad, 34),
+          decoration: const BoxDecoration(
+            gradient: LinearGradient(
+              begin: Alignment.bottomCenter,
+              end: Alignment.topCenter,
+              colors: [Color(0xFA04070E), Color(0xF2070C18)],
+            ),
+            borderRadius: BorderRadius.vertical(top: Radius.circular(26)),
+          ),
+          child: SingleChildScrollView(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Row(
+                  children: [
+                    const Text('选集',
+                        style: TextStyle(
+                            fontSize: 24,
+                            fontWeight: FontWeight.w700,
+                            color: AppColors.text,
+                            fontFamilyFallback: kFontFallback)),
+                    const SizedBox(width: 14),
+                    Text('共 ${eps.length} $unit',
+                        style: const TextStyle(
+                            fontSize: 15, color: AppColors.textDim, fontFamilyFallback: kFontFallback)),
+                    const Spacer(),
+                    if (hasNext) ...[
+                      Flexible(
+                        child: Text(
+                          nextHint,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          textAlign: TextAlign.right,
+                          style: const TextStyle(fontSize: 14, color: AppColors.textDim, fontFamilyFallback: kFontFallback),
+                        ),
+                      ),
+                      const SizedBox(width: 14),
+                      SizedBox(
+                        width: 220,
+                        child: ActionButton(
+                          label: '▶ 播放下一集',
+                          primary: true,
+                          focusNode: _nextNode,
+                          onPressed: () {
+                            widget.onClose();
+                            app.nextEpisode();
+                          },
+                        ),
+                      ),
+                    ],
+                  ],
+                ),
+                const SizedBox(height: 18),
+                _EpisodePager(
+                  episodes: eps,
+                  currentIndex: app.episodeIndex,
+                  onPick: (i) {
+                    widget.onClose();
+                    app.selectEpisode(i);
+                  },
+                  spacing: 12,
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
     );
   }
 }

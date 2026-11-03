@@ -869,6 +869,14 @@ class AppController extends ChangeNotifier {
     await _playCurrent(resumeMs: 0);
   }
 
+  /// Whether the current line has an episode after [episodeIndex]. Drives the
+  /// 播放下一集 shortcut in the fullscreen 选集 sheet: hidden on a movie, on a
+  /// single-episode source and on the last episode, so the button never lies.
+  bool get hasNextEpisode {
+    final eps = currentEpisodes;
+    return eps.length > 1 && episodeIndex >= 0 && episodeIndex + 1 < eps.length;
+  }
+
   /// Play the next episode (auto-continue). Toasts when already at the end.
   Future<void> nextEpisode() async {
     final eps = currentEpisodes;

@@ -74,18 +74,21 @@ class ActionButton extends StatelessWidget {
     required this.onPressed,
     this.primary = false,
     this.autofocus = false,
+    this.focusNode,
   });
 
   final String label;
   final VoidCallback onPressed;
   final bool primary;
   final bool autofocus;
+  final FocusNode? focusNode;
 
   @override
   Widget build(BuildContext context) {
     return Focusable(
       onPressed: onPressed,
       autofocus: autofocus,
+      focusNode: focusNode,
       builder: (context, focused) {
         final base = BoxDecoration(
           gradient: primary
