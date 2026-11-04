@@ -871,6 +871,13 @@ class _FullscreenPlayerState extends State<_FullscreenPlayer> {
     return Focus(
       autofocus: true,
       focusNode: _rootNode,
+      // The root node is a full-screen key receiver, not a navigation target.
+      // Without this it also shows up as a directional-traversal candidate, and
+      // because its rect spans the whole screen its CENTER is the geometrically
+      // "closest" node to the left of any cell in the right half of an overlay —
+      // so ← from the 选集 grid (or any menu) focused this invisible node and
+      // the highlight simply vanished, dead-ending all further arrows.
+      skipTraversal: true,
       onKeyEvent: _onKey,
       child: ColoredBox(
         color: const Color(0xFF000000),

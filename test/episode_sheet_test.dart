@@ -1,5 +1,5 @@
+import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:flutter/widgets.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:bear_tv/core/app_controller.dart';
 import 'package:bear_tv/core/app_scope.dart';
@@ -98,12 +98,20 @@ Future<void> _pump(WidgetTester tester, AppController c) async {
   tester.view.devicePixelRatio = 1.0;
   tester.view.physicalSize = const Size(1920, 1080);
   addTearDown(tester.view.reset);
+  // MaterialApp supplies the arrow-key → directional-traversal shortcuts the
+  // real app gets from `MaterialApp` in app.dart; without it arrow presses are
+  // inert in a widget test. The FocusScope + FocusTraversalGroup mirror Shell's
+  // scaffolding so traversal scopes match production.
   await tester.pumpWidget(
-    AppScope(
-      controller: c,
-      child: const Directionality(
-        textDirection: TextDirection.ltr,
-        child: PlayScreen(),
+    MaterialApp(
+      home: AppScope(
+        controller: c,
+        child: Directionality(
+          textDirection: TextDirection.ltr,
+          child: FocusScope(
+            child: FocusTraversalGroup(child: const PlayScreen()),
+          ),
+        ),
       ),
     ),
   );
@@ -158,6 +166,34 @@ void main() {
 
     expect(find.text('选集'), findsNothing);
     expect(find.text('00:12:00'), findsOneWidget); // progress elapsed time
+  });
+
+  testWidgets('← never leaves the grid for the invisible fullscreen root',
+      (tester) async {
+    final c = _controller();
+    addTearDown(c.dispose);
+    await _pump(tester, c);
+
+    final focus = tester.binding.focusManager;
+    await _press(tester, LogicalKeyboardKey.arrowDown); // open the sheet
+    await _press(tester, LogicalKeyboardKey.arrowDown); // shortcut → grid
+    expect(focus.primaryFocus?.debugLabel, isNot('episodeSheetNext'));
+
+    // Walk the row leftwards. Every stop must still be a cell (150 wide); the
+    // player's root node is the full 1920-wide screen and must never be hit —
+    // landing on it dropped the highlight and dead-ended the D-pad.
+    for (var i = 0; i < 12; i++) {
+      await _press(tester, LogicalKeyboardKey.arrowLeft);
+      final f = focus.primaryFocus;
+      expect(f?.debugLabel, isNot('fullscreenPlayer'), reason: 'step $i');
+      expect(f!.rect.width, lessThan(400), reason: 'step $i → ${f.rect}');
+    }
+
+    // ...and back to the right, same rule.
+    for (var i = 0; i < 12; i++) {
+      await _press(tester, LogicalKeyboardKey.arrowRight);
+      expect(focus.primaryFocus!.rect.width, lessThan(400), reason: 'step $i');
+    }
   });
 
   testWidgets('↑ still opens 播放设置, which no longer hosts 选集',
