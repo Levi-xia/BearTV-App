@@ -4,22 +4,21 @@
 /// we avoid holding large parsed trees resident longer than needed.
 library;
 
-/// A CMS collection source: a built-in one ([isCustom] == false) or a
-/// user-added custom source. `detail` marks a special source that needs HTML
-/// scraping for its m3u8 links.
+/// A CMS collection source. Build-time injected, imported and manually added
+/// sources are all the same thing: one persisted list, no built-in/custom
+/// distinction. `detail` marks a special source that needs HTML scraping for
+/// its m3u8 links.
 class CmsSite {
   final String id;
   final String name;
   final String api;
   final String? detail;
-  final bool isCustom;
 
   const CmsSite({
     required this.id,
     required this.name,
     required this.api,
     this.detail,
-    this.isCustom = false,
   });
 
   Map<String, dynamic> toJson() => {
@@ -27,16 +26,39 @@ class CmsSite {
         'name': name,
         'api': api,
         if (detail != null) 'detail': detail,
-        'isCustom': isCustom,
       };
 
   factory CmsSite.fromJson(Map<String, dynamic> j) => CmsSite(
-        id: j['id'] as String,
-        name: (j['name'] as String?) ?? '',
-        api: (j['api'] as String?) ?? '',
-        detail: j['detail'] as String?,
-        isCustom: (j['isCustom'] as bool?) ?? false,
+        id: (j['id'] as String?)?.trim() ?? '',
+        name: (j['name'] as String?)?.trim() ?? '',
+        api: (j['api'] as String?)?.trim() ?? '',
+        detail: switch (j['detail']) {
+          final String d when d.trim().isNotEmpty => d.trim(),
+          _ => null,
+        },
       );
+}
+
+/// Normalized form of a CMS apiv3 URL, used to detect duplicates: http(s) only,
+/// scheme + host lower-cased, no fragment, no trailing slash. Returns null when
+/// [raw] is not a usable absolute http(s) URL.
+String? normalizeCmsApi(String raw) {
+  final uri = Uri.tryParse(raw.trim());
+  if (uri == null || uri.host.isEmpty) return null;
+  final scheme = uri.scheme.toLowerCase();
+  if (scheme != 'http' && scheme != 'https') return null;
+  var path = uri.path;
+  while (path.endsWith('/')) {
+    path = path.substring(0, path.length - 1);
+  }
+  return Uri(
+    scheme: scheme,
+    userInfo: uri.userInfo.isEmpty ? null : uri.userInfo,
+    host: uri.host.toLowerCase(),
+    port: uri.hasPort ? uri.port : null,
+    path: path,
+    query: uri.hasQuery ? uri.query : null,
+  ).toString();
 }
 
 /// One search result row from a source (`list[]` item + source tags).

@@ -109,6 +109,27 @@ class IptvController extends ChangeNotifier {
         : (_sources.isNotEmpty ? _sources.first.id : null);
   }
 
+  /// Re-read the source list after it was changed outside this controller (e.g.
+  /// a config import). Clears parsed channels/caches; the caller reloads if the
+  /// 直播 tab is visible.
+  void reloadSources() {
+    final settings = _settings;
+    if (settings == null) return;
+    _sources = settings.iptvSources;
+    final saved = settings.iptvSelectedSourceId;
+    _selectedSourceId = (saved != null && _sources.any((s) => s.id == saved))
+        ? saved
+        : (_sources.isNotEmpty ? _sources.first.id : null);
+    _cache.clear();
+    _channels = const [];
+    _selectedGroup = null;
+    currentChannel = null;
+    loading = false;
+    error = null;
+    _loadToken++;
+    notifyListeners();
+  }
+
   /// Fetch + parse the selected source's playlist. Served from cache unless
   /// [force]. Best-effort: sets [error] instead of throwing.
   Future<void> loadChannels({bool force = false}) async {

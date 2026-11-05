@@ -1,13 +1,96 @@
+import 'dart:convert';
+
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:bear_tv/data/danmaku/danmaku_models.dart';
 import 'package:bear_tv/data/iptv/iptv_models.dart';
 import 'package:bear_tv/data/kv_store.dart';
 import 'package:bear_tv/data/settings_store.dart';
+import 'package:bear_tv/data/vod/cms_models.dart';
 
 /// Build-time defines and in-app config are one set: a non-empty injected
 /// value overwrites the saved config on startup, an empty one leaves it alone.
 void main() {
+  const comA = CmsSite(id: 'a', name: '源A', api: 'https://a.example/api');
+  const comB = CmsSite(id: 'b', name: '源B', api: 'https://b.example/api');
+  const mineCms = CmsSite(id: 'mine', name: '我的源', api: 'http://mine/api');
+
+  SettingsStore cmsStore({
+    List<CmsSite> seed = const [],
+    List<String>? selected,
+    KeyValueStore? store,
+  }) =>
+      SettingsStore(
+        store: store ?? MemoryKeyValueStore(),
+        seededCmsSites: () => seed,
+        seededSelectedIds: selected == null ? null : () => selected,
+      );
+
+  group('cmsSites', () {
+    test('first run uses the build-time sources and selects them all', () {
+      final s = cmsStore(seed: [comA, comB]);
+      expect(s.cmsSites.map((v) => v.id), ['a', 'b']);
+      expect(s.selectedSourceIds, ['a', 'b']);
+    });
+
+    test('first run honours the build-time selection', () {
+      final s = cmsStore(seed: [comA, comB], selected: ['b']);
+      expect(s.selectedSourceIds, ['b']);
+    });
+
+    test('a non-empty build value overwrites the saved list on init', () async {
+      final s = cmsStore(seed: [comA, comB], selected: ['b']);
+      await s.setCmsSites([mineCms]);
+      await s.setSelectedSourceIds(['mine']);
+
+      await s.init();
+
+      expect(s.cmsSites.map((v) => v.id), ['a', 'b']);
+      expect(s.selectedSourceIds, ['b']);
+    });
+
+    test('an empty build value keeps the saved list on init', () async {
+      final s = cmsStore();
+      await s.setCmsSites([mineCms]);
+      await s.setSelectedSourceIds(['mine']);
+
+      await s.init();
+
+      expect(s.cmsSites.map((v) => v.id), ['mine']);
+      expect(s.selectedSourceIds, ['mine']);
+    });
+
+    test('deleting every source persists an empty list', () async {
+      final s = cmsStore();
+      await s.setCmsSites(const []);
+
+      expect(s.cmsSites, isEmpty);
+      expect(s.selectedSourceIds, isEmpty);
+    });
+
+    test('duplicate API URLs collapse and entries without a usable API drop',
+        () {
+      final s = cmsStore(seed: const [
+        CmsSite(id: 'one', name: '一', api: 'https://dup.example/api/'),
+        CmsSite(id: 'two', name: '二', api: 'https://dup.example/api'),
+        CmsSite(id: 'bad', name: '坏', api: 'ftp://nope'),
+      ]);
+
+      expect(s.cmsSites.map((v) => v.id), ['one']);
+    });
+
+    test('legacy custom sources are read when cmsSites was never written', () {
+      final store = MemoryKeyValueStore({
+        'customSites': jsonEncode([
+          {'id': 'old', 'name': '旧源', 'api': 'https://old.example/api'},
+        ]),
+      });
+      final s = cmsStore(store: store);
+
+      expect(s.cmsSites.single.id, 'old');
+    });
+  });
+
   const seedIptv =
       IptvSource(id: 'iptv_default_zn', name: '默认直播源', url: 'http://seed.m3u');
   const mineIptv = IptvSource(id: 'mine', name: '我的源', url: 'http://mine.m3u');

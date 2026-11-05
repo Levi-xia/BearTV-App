@@ -91,13 +91,16 @@ class _Clock {
   void advance([int seconds = 6]) => now = now.add(Duration(seconds: seconds));
 }
 
-const _siteA = CmsSite(id: 'a', name: '源A', api: 'https://a.example/api.php/provide/vod');
-const _siteB = CmsSite(id: 'b', name: '源B', api: 'https://b.example/api.php/provide/vod');
+const _siteA =
+    CmsSite(id: 'a', name: '源A', api: 'https://a.example/api.php/provide/vod');
+const _siteB =
+    CmsSite(id: 'b', name: '源B', api: 'https://b.example/api.php/provide/vod');
 
 final _detailA = _detail('a', '源A', '1');
 final _detailB = _detail('b', '源B', '2');
 
-VodDetail _detail(String sourceId, String sourceName, String vodId) => VodDetail(
+VodDetail _detail(String sourceId, String sourceName, String vodId) =>
+    VodDetail(
       sourceId: sourceId,
       sourceName: sourceName,
       vodId: vodId,
@@ -163,7 +166,8 @@ AppController _controller({
   PlayerController? player,
   _Clock? clock,
 }) {
-  final settings = SettingsStore(seedDefaultKey: false, store: MemoryKeyValueStore());
+  final settings =
+      SettingsStore(seedDefaultKey: false, store: MemoryKeyValueStore());
   return AppController(
     settings: settings,
     history: HistoryStore(),
@@ -174,7 +178,7 @@ AppController _controller({
 }
 
 Future<void> _seedSites(AppController c) async {
-  await c.settings.setCustomSites([_siteA, _siteB]);
+  await c.settings.setCmsSites([_siteA, _siteB]);
   await c.settings.setSelectedSourceIds(['a', 'b']);
 }
 

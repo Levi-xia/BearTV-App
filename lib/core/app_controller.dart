@@ -6,6 +6,7 @@ import 'dart:async';
 import 'danmaku_controller.dart';
 import 'iptv_controller.dart';
 import 'live_probe_controller.dart';
+import '../data/config_import.dart';
 import '../data/danmaku/danmaku_models.dart';
 import '../data/history_store.dart';
 import '../data/iptv/iptv_models.dart';
@@ -15,7 +16,6 @@ import '../data/repository.dart';
 import '../data/settings_store.dart';
 import '../data/tmdb/tmdb_repository.dart';
 import '../data/vod/cms_models.dart';
-import '../data/vod/cms_sources.dart';
 import '../data/vod/vod_repository.dart';
 import '../player/player_controller.dart';
 import 'config.dart';
@@ -268,17 +268,19 @@ class AppController extends ChangeNotifier {
     }
   }
 
-  // --- Selected CMS sources -------------------------------------------------
-  List<CmsSite> get _allSites => [...kBuiltinSites, ...settings.customSites];
+  // --- CMS sources ----------------------------------------------------------
+  /// Every configured source. Build-time injected, imported and manually added
+  /// sources all live in the same persisted list.
+  List<CmsSite> get allSites => settings.cmsSites;
 
-  /// The enabled sources, in built-in-then-custom order.
+  /// The enabled sources, in configured order.
   List<CmsSite> get selectedSites {
     final ids = settings.selectedSourceIds.toSet();
-    return _allSites.where((s) => ids.contains(s.id)).toList();
+    return allSites.where((s) => ids.contains(s.id)).toList();
   }
 
   CmsSite? _siteById(String id) {
-    for (final s in _allSites) {
+    for (final s in allSites) {
       if (s.id == id) return s;
     }
     return null;
@@ -388,6 +390,8 @@ class AppController extends ChangeNotifier {
       showToast(toastMsg);
       await setTab(currentTab, silent: true);
     } else {
+      // No TMDB key, but the 直播 tab may still have just-imported sources.
+      if (currentTab == kIptvTab) await setTab(kIptvTab, silent: true);
       notifyListeners();
     }
   }
@@ -639,8 +643,7 @@ class AppController extends ChangeNotifier {
     // page (search keeps its query + results; home restores the rail card).
     _playReturnPage = page == AppPage.search ? AppPage.search : AppPage.home;
     pendingHomeFocusKey = item.key;
-    pendingSearchFocusKey =
-        _playReturnPage == AppPage.search ? item.key : null;
+    pendingSearchFocusKey = _playReturnPage == AppPage.search ? item.key : null;
     currentDetail = null;
     resourceOptions = const [];
     lineIndex = 0;
@@ -756,8 +759,7 @@ class AppController extends ChangeNotifier {
     currentItem = item;
     _playReturnPage = page == AppPage.search ? AppPage.search : AppPage.home;
     pendingHomeFocusKey = item.key;
-    pendingSearchFocusKey =
-        _playReturnPage == AppPage.search ? item.key : null;
+    pendingSearchFocusKey = _playReturnPage == AppPage.search ? item.key : null;
     currentDetail = null;
     resourceOptions = const [];
     lineIndex = 0;
@@ -1003,7 +1005,8 @@ class AppController extends ChangeNotifier {
   Future<void> pickDanmakuMatch(DanmakuMatch m) => danmaku.loadFromMatch(m);
 
   /// Relative seek (fullscreen ←/→). Clamps to [0, duration].
-  Future<void> seekBy(Duration delta) async {    final v = player.value;
+  Future<void> seekBy(Duration delta) async {
+    final v = player.value;
     var target = v.position + delta;
     if (target < Duration.zero) target = Duration.zero;
     if (v.duration > Duration.zero && target > v.duration) target = v.duration;
@@ -1134,31 +1137,63 @@ class AppController extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// Add a custom source. Returns null on success, else an error message.
-  Future<String?> addCustomSite(String name, String api) async {
+  /// Add a source. Returns null on success, else an error message. API URLs are
+  /// compared in normalized form, so a trailing slash / host casing can't add
+  /// the same endpoint twice.
+  Future<String?> addCmsSite(String name, String api) async {
     final n = name.trim();
     final a = api.trim();
     if (n.isEmpty || a.isEmpty) return '请填写名称与接口地址';
-    if (!a.startsWith('http://') && !a.startsWith('https://'))
-      return '接口地址需以 http 开头';
-    final existing = settings.customSites;
-    if (existing.length >= kMaxCustomSites)
-      return '自定义源已达上限（$kMaxCustomSites 个）';
-    final id = 'custom_${DateTime.now().millisecondsSinceEpoch}';
-    final site = CmsSite(id: id, name: n, api: a, isCustom: true);
-    await settings.setCustomSites([...existing, site]);
+    final key = normalizeCmsApi(a);
+    if (key == null) return '接口地址需以 http/https 开头';
+    if (settings.cmsSites.any((s) => normalizeCmsApi(s.api) == key)) {
+      return '该资源站已存在（接口地址重复）';
+    }
+    final id = 'cms_${DateTime.now().microsecondsSinceEpoch}';
+    final site = CmsSite(id: id, name: n, api: a);
+    await settings.setCmsSites([...settings.cmsSites, site]);
     // Enable it by default.
     await settings.setSelectedSourceIds([...settings.selectedSourceIds, id]);
     notifyListeners();
     return null;
   }
 
-  Future<void> removeCustomSite(String id) async {
+  Future<void> removeCmsSite(String id) async {
     await settings
-        .setCustomSites(settings.customSites.where((s) => s.id != id).toList());
+        .setCmsSites(settings.cmsSites.where((s) => s.id != id).toList());
     await settings.setSelectedSourceIds(
         settings.selectedSourceIds.where((e) => e != id).toList());
     notifyListeners();
+  }
+
+  // --- Config import --------------------------------------------------------
+
+  /// Download + validate a config import. Throws [ConfigImportException] with a
+  /// user-facing message; never mutates settings (see [applyConfigImport]).
+  Future<ImportedConfig> loadConfigImport(String url) => fetchConfigImport(url);
+
+  /// Apply a previously validated [ImportedConfig]. Sections the payload did
+  /// not mention are left untouched, so a partial import never wipes unrelated
+  /// configuration. Reloads the controllers and the home feed afterwards.
+  Future<void> applyConfigImport(ImportedConfig c) async {
+    if (c.tmdbApiKey != null) await settings.setTmdbApiKey(c.tmdbApiKey!);
+    if (c.tmdbProxyBase != null) await settings.setProxyBase(c.tmdbProxyBase!);
+    if (c.cmsSites != null) await settings.setCmsSites(c.cmsSites!);
+    if (c.selectedSourceIds != null) {
+      await settings.setSelectedSourceIds(c.selectedSourceIds!);
+    }
+    if (c.danmakuHosts != null) {
+      await settings.setDanmakuHosts(c.danmakuHosts!);
+      await settings.setDanmakuDefaultHostId(c.danmakuDefaultHostId);
+    }
+    if (c.iptvSources != null) {
+      await settings.setIptvSources(c.iptvSources!);
+      await settings.setIptvSelectedSourceId(c.iptvSelectedSourceId);
+    }
+    danmaku.reloadHosts();
+    iptv.reloadSources();
+    await _reconfigureAndReload('配置已导入 · 正在重新加载');
+    if (repository == null) showToast('配置已导入');
   }
 
   /// Back arrived as a raw key event (Esc / goBack / browserBack shortcut).
@@ -1283,9 +1318,8 @@ class AppController extends ChangeNotifier {
     if (next == fullscreen) return;
     fullscreen = next;
     if (next) {
-      showToast(isLiveTab
-          ? '已进入全屏 · 上键频道列表 · 返回退出'
-          : '已进入全屏 · 上键菜单 · 左右快进退 · 返回退出');
+      showToast(
+          isLiveTab ? '已进入全屏 · 上键频道列表 · 返回退出' : '已进入全屏 · 上键菜单 · 左右快进退 · 返回退出');
     }
     notifyListeners();
   }

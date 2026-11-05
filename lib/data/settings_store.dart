@@ -17,9 +17,13 @@ class SettingsStore {
   SettingsStore({
     this.seedDefaultKey = true,
     KeyValueStore? store,
+    List<CmsSite> Function()? seededCmsSites,
+    List<String> Function()? seededSelectedIds,
     List<IptvSource> Function()? seededIptvSources,
     List<DanmakuHost> Function()? seededDanmakuHosts,
   })  : _store = store ?? SharedPrefsStore(),
+        _cmsSeed = seededCmsSites,
+        _selectedSeed = seededSelectedIds,
         _iptvSeed = seededIptvSources,
         _danmakuSeed = seededDanmakuHosts;
 
@@ -27,6 +31,8 @@ class SettingsStore {
 
   /// Overrides for the build-time seeds; tests inject them because the
   /// `String.fromEnvironment` defines are empty under `flutter test`.
+  final List<CmsSite> Function()? _cmsSeed;
+  final List<String> Function()? _selectedSeed;
   final List<IptvSource> Function()? _iptvSeed;
   final List<DanmakuHost> Function()? _danmakuSeed;
 
@@ -47,7 +53,10 @@ class SettingsStore {
 
   static const _kApiKey = 'tmdbApiKey';
   static const _kSelectedIds = 'selectedSourceIds';
-  static const _kCustomSites = 'customSites';
+  static const _kCmsSites = 'cmsSites';
+  // Pre-unification key, read once so existing custom sources survive an
+  // upgrade. New writes always go to [_kCmsSites].
+  static const _kLegacyCustomSites = 'customSites';
   static const _kProxyEnabled = 'tmdbProxyEnabled';
   static const _kProxyBase = 'tmdbProxyBase';
   static const _kSystemIme = 'searchUseSystemIme';
@@ -59,11 +68,17 @@ class SettingsStore {
   static const _kIptvSelectedSourceId = 'iptvSelectedSourceId';
 
   /// Load the backing store, then apply the build-time config: a non-empty
-  /// `IPTV_PLAYLIST_URL` / `DANMAKU_BASE_URL`+`DANMAKU_TOKEN` overwrites the
-  /// saved sources/hosts, so changing `secrets.json` and rebuilding is visible
-  /// in Settings. An empty define leaves the user's saved config untouched.
+  /// `CMS_SITES_JSON` / `IPTV_PLAYLIST_URL` / `DANMAKU_BASE_URL`+`DANMAKU_TOKEN`
+  /// overwrites the saved sources/hosts, so changing `secrets.json` and
+  /// rebuilding is visible in Settings. An empty define leaves the user's saved
+  /// config untouched.
   Future<void> init() async {
     await _store.init();
+    final cms = _defaultCmsSites();
+    if (cms.isNotEmpty) {
+      await setCmsSites(cms);
+      await setSelectedSourceIds(_defaultSelectedIds(cms));
+    }
     final iptv = _defaultIptvSources();
     if (iptv.isNotEmpty) {
       await setIptvSources(iptv);
@@ -101,7 +116,10 @@ class SettingsStore {
     try {
       final decoded = jsonDecode(raw);
       if (decoded is List) {
-        return decoded.map((e) => e.toString()).where((e) => e.isNotEmpty).toList();
+        return decoded
+            .map((e) => e.toString())
+            .where((e) => e.isNotEmpty)
+            .toList();
       }
     } catch (_) {
       // Corrupt value: treat as empty.
@@ -111,7 +129,6 @@ class SettingsStore {
 
   Future<void> setSearchHistory(List<String> queries) =>
       _store.setString(_kSearchHistory, jsonEncode(queries));
-
 
   // --- TMDB network proxy ---------------------------------------------------
 
@@ -143,47 +160,80 @@ class SettingsStore {
     return v.trim(); // present-but-empty means the user explicitly cleared it
   }
 
-  Future<void> setTmdbApiKey(String key) => _store.setString(_kApiKey, key.trim());
+  Future<void> setTmdbApiKey(String key) =>
+      _store.setString(_kApiKey, key.trim());
 
   // --- Playback source configuration ---------------------------------------
 
-  /// Enabled CMS source ids (built-in + custom). Defaults to
-  /// [kDefaultSelected] on first run.
-  List<String> get selectedSourceIds {
-    final raw = _store.getString(_kSelectedIds);
-    if (raw == null) return List<String>.from(kDefaultSelected);
+  /// Every configured CMS source, in display order. Build-time injected,
+  /// imported and manually added sources share this one list — there is no
+  /// built-in/custom distinction.
+  List<CmsSite> get cmsSites {
+    final raw = _store.getString(_kCmsSites);
+    if (raw == null) {
+      final legacy = _legacyCmsSites();
+      return legacy.isNotEmpty ? legacy : _defaultCmsSites();
+    }
     try {
       final decoded = jsonDecode(raw);
-      if (decoded is List) return decoded.map((e) => e.toString()).toList();
+      if (decoded is List) return parseCmsSiteRows(decoded);
     } catch (_) {
-      // Corrupt value: fall through to defaults.
+      // Corrupt value: fall back to the build-time default (if any).
     }
-    return List<String>.from(kDefaultSelected);
+    return _defaultCmsSites();
   }
 
-  Future<void> setSelectedSourceIds(List<String> ids) =>
-      _store.setString(_kSelectedIds, jsonEncode(ids));
+  List<CmsSite> _defaultCmsSites() {
+    final seeded = _cmsSeed?.call();
+    // Normalize seeds too (duplicate URLs / missing names), so an injected
+    // list behaves exactly like one parsed from `secrets.json`.
+    if (seeded != null) {
+      return parseCmsSiteRows([for (final s in seeded) s.toJson()]);
+    }
+    return buildTimeCmsSites();
+  }
 
-  /// User-added custom sources (max [kMaxCustomSites]).
-  List<CmsSite> get customSites {
-    final raw = _store.getString(_kCustomSites);
+  /// Pre-unification user-added sources; read only when [cmsSites] has never
+  /// been written.
+  List<CmsSite> _legacyCmsSites() {
+    final raw = _store.getString(_kLegacyCustomSites);
     if (raw == null) return const [];
     try {
       final decoded = jsonDecode(raw);
-      if (decoded is List) {
-        return decoded
-            .whereType<Map>()
-            .map((m) => CmsSite.fromJson(Map<String, dynamic>.from(m)))
-            .toList();
-      }
+      if (decoded is List) return parseCmsSiteRows(decoded);
     } catch (_) {
-      // Corrupt value: treat as no custom sites.
+      // Ignore a corrupt legacy value.
     }
     return const [];
   }
 
-  Future<void> setCustomSites(List<CmsSite> sites) =>
-      _store.setString(_kCustomSites, jsonEncode(sites.map((s) => s.toJson()).toList()));
+  Future<void> setCmsSites(List<CmsSite> sites) => _store.setString(
+      _kCmsSites, jsonEncode(sites.map((s) => s.toJson()).toList()));
+
+  /// Enabled CMS source ids. Falls back to the build-time default selection,
+  /// or every configured source when that is empty / no longer valid.
+  List<String> get selectedSourceIds {
+    final raw = _store.getString(_kSelectedIds);
+    if (raw == null) return _defaultSelectedIds(cmsSites);
+    try {
+      final decoded = jsonDecode(raw);
+      if (decoded is List) return parseSelectedIdRows(decoded);
+    } catch (_) {
+      // Corrupt value: fall through to defaults.
+    }
+    return _defaultSelectedIds(cmsSites);
+  }
+
+  List<String> _defaultSelectedIds(List<CmsSite> sites) {
+    final configured = _selectedSeed?.call() ?? buildTimeSelectedIds();
+    final valid =
+        configured.where((id) => sites.any((s) => s.id == id)).toList();
+    if (valid.isNotEmpty) return valid;
+    return [for (final s in sites) s.id];
+  }
+
+  Future<void> setSelectedSourceIds(List<String> ids) =>
+      _store.setString(_kSelectedIds, jsonEncode(ids));
 
   // --- Danmaku (弹幕) --------------------------------------------------------
 
@@ -218,8 +268,8 @@ class SettingsStore {
         return decoded
             .whereType<Map>()
             .map((m) => DanmakuHost.fromJson(Map<String, dynamic>.from(m)))
-            .where((h) =>
-                h.baseUrl.trim().isNotEmpty && h.token.trim().isNotEmpty)
+            .where(
+                (h) => h.baseUrl.trim().isNotEmpty && h.token.trim().isNotEmpty)
             .toList();
       }
     } catch (_) {

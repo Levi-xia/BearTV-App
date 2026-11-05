@@ -3,8 +3,9 @@ import 'package:flutter/widgets.dart';
 
 import '../core/app_scope.dart';
 import '../core/theme.dart';
+import '../data/config_import.dart';
 import '../data/danmaku/danmaku_models.dart';
-import '../data/vod/cms_sources.dart';
+import '../data/vod/cms_models.dart';
 import '../widgets/chips.dart';
 import '../widgets/focus_fx.dart';
 import '../widgets/focusable.dart';
@@ -26,6 +27,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
   /// The advanced panel (TMDB Key + network proxy) starts collapsed — most
   /// users never touch these, so they're tucked away below the source config.
   bool _advancedExpanded = false;
+
+  /// Source awaiting a MENU-key delete confirmation.
+  CmsSite? _pendingDelete;
+
+  /// Last import URL for this session (not persisted). Export will later reuse
+  /// the same 配置导入 card.
+  String _importUrl = '';
 
   /// Scope over the page's controls, so [_moveByRow] only considers this page's
   /// focusables (not the header/nav that live in the surrounding Shell).
@@ -107,8 +115,123 @@ class _SettingsScreenState extends State<SettingsScreen> {
     }
   }
 
+  void _requestDelete(CmsSite site) {
+    if (_pendingDelete == null) setState(() => _pendingDelete = site);
+  }
+
+  /// One click opens the address keyboard (cancel / 导入); confirming fetches,
+  /// validates and applies in one go.
+  Future<void> _openImport() async {
+    final app = AppScope.read(context);
+    final url = await showOnScreenKeyboard(
+      context,
+      title: '配置导入地址',
+      initial: _importUrl,
+      hint: 'https://example.com/config.json',
+      confirmLabel: '导入',
+    );
+    if (url == null || !mounted) return;
+    _importUrl = url.trim();
+    if (_importUrl.isEmpty) {
+      app.showToast('请填写导入地址');
+      return;
+    }
+    app.showToast('正在导入配置…');
+    try {
+      final plan = await app.loadConfigImport(_importUrl);
+      if (!mounted) return;
+      if (plan.isEmpty) {
+        app.showToast('该配置没有可导入的内容');
+        return;
+      }
+      await app.applyConfigImport(plan);
+    } on ConfigImportException catch (e) {
+      if (mounted) app.showToast(e.message);
+    } catch (_) {
+      if (mounted) app.showToast('导入失败，请检查地址或网络');
+    }
+  }
+
+  /// Full-screen confirmation for destructive actions (currently source delete).
+  Widget _confirmDialog({
+    required String title,
+    required String body,
+    required String confirmLabel,
+    required VoidCallback onConfirm,
+    required VoidCallback onCancel,
+  }) {
+    return FocusScope(
+      autofocus: true,
+      child: ColoredBox(
+        color: const Color(0xB3000000),
+        child: Center(
+          child: Container(
+            width: 520,
+            padding: const EdgeInsets.fromLTRB(32, 30, 32, 26),
+            decoration: BoxDecoration(
+              color: AppColors.cardBg,
+              borderRadius: BorderRadius.circular(20),
+              border: Border.all(color: AppColors.hairline),
+            ),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(title,
+                    style: const TextStyle(
+                        fontSize: 24,
+                        fontWeight: FontWeight.w800,
+                        color: AppColors.text,
+                        fontFamilyFallback: kFontFallback)),
+                const SizedBox(height: 10),
+                Text(body,
+                    style: const TextStyle(
+                        fontSize: 16,
+                        height: 1.6,
+                        color: AppColors.textDim,
+                        fontFamilyFallback: kFontFallback)),
+                const SizedBox(height: 26),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.end,
+                  children: [
+                    _Btn(label: '取消', autofocus: true, onPressed: onCancel),
+                    const SizedBox(width: 14),
+                    _Btn(
+                        label: confirmLabel,
+                        primary: true,
+                        onPressed: onConfirm),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget? _activeOverlay() {
+    final app = AppScope.read(context);
+    final site = _pendingDelete;
+    if (site != null) {
+      return _confirmDialog(
+        title: '删除资源站？',
+        body: '将从配置中移除「${site.name}」。需要时可重新添加，或通过「配置导入」恢复。',
+        confirmLabel: '删除',
+        onCancel: () => setState(() => _pendingDelete = null),
+        onConfirm: () {
+          setState(() => _pendingDelete = null);
+          app.removeCmsSite(site.id);
+          app.showToast('已删除资源站');
+        },
+      );
+    }
+    return null;
+  }
+
   @override
   Widget build(BuildContext context) {
+    final overlay = _activeOverlay();
     // TV D-pad model for this mixed layout (full-width fields, horizontal
     // button rows, and a Wrap of source chips): Down/Up move by *row*,
     // Left/Right move within a row. See [_moveByRow] for why neither pure
@@ -129,70 +252,84 @@ class _SettingsScreenState extends State<SettingsScreen> {
         },
         child: FocusScope(
           node: _pageScope,
-          child: SafeArea(
-            child: SingleChildScrollView(
-              padding:
-                  const EdgeInsets.fromLTRB(AppDims.pad, 150, AppDims.pad, 60),
-              child: Center(
-                child: ConstrainedBox(
-                  constraints: const BoxConstraints(maxWidth: 900),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      const Text('设置',
-                          style: TextStyle(
-                              fontSize: 40,
-                              fontWeight: FontWeight.w800,
-                              color: AppColors.text,
-                              fontFamilyFallback: kFontFallback)),
-                      const SizedBox(height: 6),
-                      const Text('数据源与播放配置',
-                          style: TextStyle(
-                              fontSize: 17,
-                              color: AppColors.textDim,
-                              fontFamilyFallback: kFontFallback)),
-                      const SizedBox(height: 34),
-                      _sectionCard(
-                        title: '资源配置',
-                        subtitle:
-                            '播放源用于按片名解析可播放地址。勾选需要启用的采集源。',
-                        child: const _BuiltinSourcesSection(),
+          child: Stack(
+            fit: StackFit.expand,
+            children: [
+              IgnorePointer(
+                ignoring: overlay != null,
+                child: ExcludeFocus(
+                  excluding: overlay != null,
+                  child: SafeArea(
+                    child: SingleChildScrollView(
+                      padding: const EdgeInsets.fromLTRB(
+                          AppDims.pad, 150, AppDims.pad, 60),
+                      child: Center(
+                        child: ConstrainedBox(
+                          constraints: const BoxConstraints(maxWidth: 900),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              const Text('设置',
+                                  style: TextStyle(
+                                      fontSize: 40,
+                                      fontWeight: FontWeight.w800,
+                                      color: AppColors.text,
+                                      fontFamilyFallback: kFontFallback)),
+                              const SizedBox(height: 6),
+                              const Text('数据源与播放配置',
+                                  style: TextStyle(
+                                      fontSize: 17,
+                                      color: AppColors.textDim,
+                                      fontFamilyFallback: kFontFallback)),
+                              const SizedBox(height: 34),
+                              _sectionCard(
+                                title: '配置导入',
+                                subtitle:
+                                    '从地址一键导入 TMDB、资源站、直播源与弹幕源配置。导入会覆盖地址中包含的配置项，未包含的项目保持不变。',
+                                child: _ConfigTransferSection(
+                                    onImport: _openImport),
+                              ),
+                              const SizedBox(height: 22),
+                              _sectionCard(
+                                title: '资源配置',
+                                subtitle:
+                                    '播放源用于按片名解析可播放地址。点击选中或取消，按菜单键(MENU)删除。',
+                                child: _CmsSourcesSection(
+                                    onRequestDelete: _requestDelete),
+                              ),
+                              const SizedBox(height: 22),
+                              _sectionCard(
+                                title: '直播源配置',
+                                subtitle:
+                                    '添加 M3U / M3U8 播放列表地址，用于「直播」标签页。可添加多个源并在直播页快捷切换。',
+                                child: const _IptvSourcesSection(),
+                              ),
+                              const SizedBox(height: 22),
+                              _sectionCard(
+                                title: '弹幕源配置',
+                                subtitle:
+                                    '添加 dandanplay 兼容的弹幕服务（地址 + Token，Token 必填）。可添加多个源，点击名称设为默认，播放时自动使用默认源匹配弹幕。',
+                                child: const _DanmakuHostsSection(),
+                              ),
+                              const SizedBox(height: 22),
+                              _sectionCard(
+                                title: '输入法配置',
+                                subtitle:
+                                    '开启后使用设备自带输入法：搜索页为原生输入框，选中后按「确定」呼出系统键盘（可用你熟悉的中文输入）。关闭则使用内置离线拼音键盘。',
+                                child: const _SearchImeSection(),
+                              ),
+                              const SizedBox(height: 22),
+                              _advancedPanel(),
+                            ],
+                          ),
+                        ),
                       ),
-                      const SizedBox(height: 22),
-                      _sectionCard(
-                        title: '自定义资源站配置',
-                        subtitle:
-                            '手动添加 MacCMS (apiv3) 采集接口，最多自定义 $kMaxCustomSites 个。',
-                        child: const _CustomSourcesSection(),
-                      ),
-                      const SizedBox(height: 22),
-                      _sectionCard(
-                        title: '直播源配置',
-                        subtitle:
-                            '添加 M3U / M3U8 播放列表地址，用于「直播」标签页。可添加多个源并在直播页快捷切换。',
-                        child: const _IptvSourcesSection(),
-                      ),
-                      const SizedBox(height: 22),
-                      _sectionCard(
-                        title: '弹幕源配置',
-                        subtitle:
-                            '添加 dandanplay 兼容的弹幕服务（地址 + Token，Token 必填）。可添加多个源，点击名称设为默认，播放时自动使用默认源匹配弹幕。',
-                        child: const _DanmakuHostsSection(),
-                      ),
-                      const SizedBox(height: 22),
-                      _sectionCard(
-                        title: '输入法配置',
-                        subtitle:
-                            '开启后使用设备自带输入法：搜索页为原生输入框，选中后按「确定」呼出系统键盘（可用你熟悉的中文输入）。关闭则使用内置离线拼音键盘。',
-                        child: const _SearchImeSection(),
-                      ),
-                      const SizedBox(height: 22),
-                      _advancedPanel(),
-                    ],
+                    ),
                   ),
                 ),
               ),
-            ),
+              if (overlay != null) Positioned.fill(child: overlay),
+            ],
           ),
         ),
       ),
@@ -293,7 +430,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
                         style: TextStyle(
                             fontSize: 16,
                             fontWeight: FontWeight.w600,
-                            color: focused ? AppColors.accent : AppColors.textDim,
+                            color:
+                                focused ? AppColors.accent : AppColors.textDim,
                             fontFamilyFallback: kFontFallback)),
                   ],
                 ),
@@ -500,49 +638,22 @@ class _SearchImeSection extends StatelessWidget {
   }
 }
 
-/// Built-in source toggles (资源配置): a Wrap of chips, one per built-in CMS
-/// source, each toggling whether that source is used for resolving playback.
-class _BuiltinSourcesSection extends StatelessWidget {
-  const _BuiltinSourcesSection();
+/// CMS source management (资源配置): every configured source — build-time,
+/// imported or manually added — is one chip. OK toggles it, MENU asks to delete
+/// it. URLs are deliberately not shown; the add form below is the only place a
+/// URL appears.
+class _CmsSourcesSection extends StatefulWidget {
+  const _CmsSourcesSection({required this.onRequestDelete});
+
+  /// Raised on MENU. The page owns the confirmation overlay so it can cover the
+  /// whole screen instead of just this card.
+  final ValueChanged<CmsSite> onRequestDelete;
 
   @override
-  Widget build(BuildContext context) {
-    final app = AppScope.of(context);
-    if (kBuiltinSites.isEmpty) {
-      return const Text(
-        '当前构建未内置采集源，请在下方「自定义资源站配置」中添加。',
-        style: TextStyle(
-            fontSize: 15,
-            color: AppColors.textDim,
-            fontFamilyFallback: kFontFallback),
-      );
-    }
-    return Wrap(
-      spacing: 10,
-      runSpacing: 10,
-      children: [
-        for (var i = 0; i < kBuiltinSites.length; i++)
-          SelectableChip(
-            label: kBuiltinSites[i].name,
-            selected: app.isSiteSelected(kBuiltinSites[i].id),
-            autofocus: i == 0,
-            onPressed: () => app.toggleSite(kBuiltinSites[i].id),
-          ),
-      ],
-    );
-  }
+  State<_CmsSourcesSection> createState() => _CmsSourcesSectionState();
 }
 
-/// Custom source management (自定义资源站配置): list + remove existing custom
-/// sources, and add a new one (name + apiv3 URL) via the on-screen keyboard.
-class _CustomSourcesSection extends StatefulWidget {
-  const _CustomSourcesSection();
-
-  @override
-  State<_CustomSourcesSection> createState() => _CustomSourcesSectionState();
-}
-
-class _CustomSourcesSectionState extends State<_CustomSourcesSection> {
+class _CmsSourcesSectionState extends State<_CmsSourcesSection> {
   String _name = '';
   String _api = '';
 
@@ -562,7 +673,7 @@ class _CustomSourcesSectionState extends State<_CustomSourcesSection> {
 
   Future<void> _add() async {
     final app = AppScope.read(context);
-    final err = await app.addCustomSite(_name, _api);
+    final err = await app.addCmsSite(_name, _api);
     if (!mounted) return;
     if (err != null) {
       app.showToast(err);
@@ -578,42 +689,41 @@ class _CustomSourcesSectionState extends State<_CustomSourcesSection> {
   @override
   Widget build(BuildContext context) {
     final app = AppScope.of(context);
-    final custom = app.settings.customSites;
+    final sites = app.settings.cmsSites;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        if (custom.isNotEmpty) ...[
-          const _SubLabel('已添加'),
+        if (sites.isEmpty)
+          const Text(
+            '当前没有资源站，可在下方添加，或通过「配置导入」批量导入。',
+            style: TextStyle(
+                fontSize: 15,
+                color: AppColors.textDim,
+                fontFamilyFallback: kFontFallback),
+          )
+        else ...[
+          Wrap(
+            spacing: 10,
+            runSpacing: 10,
+            children: [
+              for (var i = 0; i < sites.length; i++)
+                SelectableChip(
+                  label: sites[i].name,
+                  selected: app.isSiteSelected(sites[i].id),
+                  onPressed: () => app.toggleSite(sites[i].id),
+                  onMenu: () => widget.onRequestDelete(sites[i]),
+                ),
+            ],
+          ),
           const SizedBox(height: 12),
-          for (final s in custom)
-            Padding(
-              padding: const EdgeInsets.only(bottom: 10),
-              child: Row(
-                children: [
-                  SelectableChip(
-                    label: s.name,
-                    selected: app.isSiteSelected(s.id),
-                    onPressed: () => app.toggleSite(s.id),
-                  ),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: Text(s.api,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(
-                            fontSize: 13,
-                            color: AppColors.textDim,
-                            fontFamilyFallback: kFontFallback)),
-                  ),
-                  const SizedBox(width: 12),
-                  _Btn(
-                      label: '删除', onPressed: () => app.removeCustomSite(s.id)),
-                ],
-              ),
-            ),
-          const SizedBox(height: 22),
+          Text('共 ${sites.length} 个 · 按菜单键(MENU)删除',
+              style: const TextStyle(
+                  fontSize: 14,
+                  color: AppColors.textDim,
+                  fontFamilyFallback: kFontFallback)),
         ],
-        const _SubLabel('添加自定义源'),
+        const SizedBox(height: 22),
+        const _SubLabel('添加资源站'),
         const SizedBox(height: 12),
         _ValueField(value: _name, hint: '源名称，例如：我的采集', onPressed: _editName),
         const SizedBox(height: 12),
@@ -623,6 +733,23 @@ class _CustomSourcesSectionState extends State<_CustomSourcesSection> {
             onPressed: _editApi),
         const SizedBox(height: 16),
         _Btn(label: '添加', primary: true, onPressed: _add),
+      ],
+    );
+  }
+}
+
+/// Config transfer actions. Today only import exists; export will be added as a
+/// sibling button in the same row, sharing the dialog/overlay plumbing below.
+class _ConfigTransferSection extends StatelessWidget {
+  const _ConfigTransferSection({required this.onImport});
+  final VoidCallback onImport;
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      children: [
+        _Btn(
+            label: '导入配置', primary: true, autofocus: true, onPressed: onImport),
       ],
     );
   }
@@ -644,15 +771,20 @@ class _SubLabel extends StatelessWidget {
 
 class _Btn extends StatelessWidget {
   const _Btn(
-      {required this.label, required this.onPressed, this.primary = false});
+      {required this.label,
+      required this.onPressed,
+      this.primary = false,
+      this.autofocus = false});
   final String label;
   final VoidCallback onPressed;
   final bool primary;
+  final bool autofocus;
 
   @override
   Widget build(BuildContext context) {
     return Focusable(
       onPressed: onPressed,
+      autofocus: autofocus,
       ensureVisibleAlignment: 0.5,
       builder: (context, focused) {
         final active = focused || primary;
@@ -914,9 +1046,7 @@ class _DanmakuHostsSectionState extends State<_DanmakuHostsSection> {
                 onPressed: _editBaseUrl),
             const SizedBox(height: 12),
             _ValueField(
-                value: _token,
-                hint: 'Token（必填）',
-                onPressed: _editToken),
+                value: _token, hint: 'Token（必填）', onPressed: _editToken),
             const SizedBox(height: 16),
             _Btn(label: '添加', primary: true, onPressed: _add),
           ],

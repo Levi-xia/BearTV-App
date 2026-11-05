@@ -88,12 +88,23 @@ class DanmakuController extends ChangeNotifier {
   void init(SettingsStore settings) {
     _settings = settings;
     _config = settings.danmakuConfig;
+    reloadHosts();
+  }
+
+  /// Re-read the host list after it was changed outside this controller (e.g. a
+  /// config import). Drops host-scoped caches and any in-flight match.
+  void reloadHosts() {
+    final settings = _settings;
+    if (settings == null) return;
     _hosts = settings.danmakuHosts;
     _defaultHostId = settings.danmakuDefaultHostId;
     // A default pointing at a removed host falls back to the first source.
     if (_defaultHostId != null && !_hosts.any((h) => h.id == _defaultHostId)) {
       _defaultHostId = _hosts.isNotEmpty ? _hosts.first.id : null;
     }
+    _loadToken++;
+    _cache.clear();
+    notifyListeners();
   }
 
   String _hostKey(DanmakuHost host) =>
@@ -156,7 +167,8 @@ class DanmakuController extends ChangeNotifier {
     notifyListeners();
 
     DanmakuRequestException? failure;
-    var answered = false; // at least one query got a real (possibly empty) answer
+    var answered =
+        false; // at least one query got a real (possibly empty) answer
     List<DanmakuMatch> matched = const [];
     List<DanmakuMatch> fuzzy = const [];
     String? fuzzyName;
@@ -397,9 +409,11 @@ class DanmakuController extends ChangeNotifier {
   /// (usually the release name) then the TMDB title, each as `S01E{nn}`, then
   /// the same titles bare for servers that only index movies / season packs.
   /// Deduplicated, order preserved.
-  List<String> _searchNames(String title, int episodeIndex, String? detailTitle) {
+  List<String> _searchNames(
+      String title, int episodeIndex, String? detailTitle) {
     final titles = <String>[
-      if (detailTitle != null && detailTitle.trim().isNotEmpty) detailTitle.trim(),
+      if (detailTitle != null && detailTitle.trim().isNotEmpty)
+        detailTitle.trim(),
       title,
     ];
     final out = <String>[];

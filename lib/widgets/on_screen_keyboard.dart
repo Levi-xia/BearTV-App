@@ -13,12 +13,16 @@ import 'focusable.dart';
 ///   can type with the IME they already know (incl. 中文).
 /// - OFF → a D-pad-friendly on-screen keyboard, since a focused EditableText on
 ///   Android TV traps the remote's directional keys (arrows move the caret).
+///
+/// [confirmLabel] lets callers name the primary action (e.g. 导入), so no extra
+/// confirmation dialog is needed on top of the keyboard.
 Future<String?> showOnScreenKeyboard(
   BuildContext context, {
   required String title,
   String initial = '',
   bool obscure = false,
   String hint = '',
+  String confirmLabel = '完成',
 }) {
   final systemIme = AppScope.read(context).searchUseSystemIme;
   return showDialog<String>(
@@ -26,9 +30,17 @@ Future<String?> showOnScreenKeyboard(
     barrierColor: const Color(0xCC03060E),
     builder: (_) => systemIme
         ? _NativeInputDialog(
-            title: title, initial: initial, obscure: obscure, hint: hint)
+            title: title,
+            initial: initial,
+            obscure: obscure,
+            hint: hint,
+            confirmLabel: confirmLabel)
         : _OskDialog(
-            title: title, initial: initial, obscure: obscure, hint: hint),
+            title: title,
+            initial: initial,
+            obscure: obscure,
+            hint: hint,
+            confirmLabel: confirmLabel),
   );
 }
 
@@ -68,11 +80,13 @@ class _NativeInputDialog extends StatefulWidget {
       {required this.title,
       required this.initial,
       required this.obscure,
-      required this.hint});
+      required this.hint,
+      required this.confirmLabel});
   final String title;
   final String initial;
   final bool obscure;
   final String hint;
+  final String confirmLabel;
 
   @override
   State<_NativeInputDialog> createState() => _NativeInputDialogState();
@@ -185,38 +199,38 @@ class _NativeInputDialogState extends State<_NativeInputDialog>
       child: _card(
         width: 720,
         child: Column(
-        mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          _title(widget.title),
-          const SizedBox(height: 16),
-          _editing ? _field() : _fauxBox(),
-          if (widget.hint.isNotEmpty) ...[
-            const SizedBox(height: 12),
-            Text(widget.hint,
-                style: const TextStyle(
-                    fontSize: 14,
-                    color: AppColors.textDim,
-                    fontFamilyFallback: kFontFallback)),
-          ],
-          const SizedBox(height: 22),
-          Row(
-            children: [
-              Expanded(
-                  child: _OskKey(
-                      label: '取消',
-                      wide: true,
-                      onPressed: () => Navigator.of(context).pop())),
-              const SizedBox(width: 12),
-              Expanded(
-                  child: _OskKey(
-                      label: '完成',
-                      wide: true,
-                      primary: true,
-                      onPressed: _done)),
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            _title(widget.title),
+            const SizedBox(height: 16),
+            _editing ? _field() : _fauxBox(),
+            if (widget.hint.isNotEmpty) ...[
+              const SizedBox(height: 12),
+              Text(widget.hint,
+                  style: const TextStyle(
+                      fontSize: 14,
+                      color: AppColors.textDim,
+                      fontFamilyFallback: kFontFallback)),
             ],
-          ),
-        ],
+            const SizedBox(height: 22),
+            Row(
+              children: [
+                Expanded(
+                    child: _OskKey(
+                        label: '取消',
+                        wide: true,
+                        onPressed: () => Navigator.of(context).pop())),
+                const SizedBox(width: 12),
+                Expanded(
+                    child: _OskKey(
+                        label: widget.confirmLabel,
+                        wide: true,
+                        primary: true,
+                        onPressed: _done)),
+              ],
+            ),
+          ],
         ),
       ),
     );
@@ -298,11 +312,13 @@ class _OskDialog extends StatefulWidget {
       {required this.title,
       required this.initial,
       required this.obscure,
-      required this.hint});
+      required this.hint,
+      required this.confirmLabel});
   final String title;
   final String initial;
   final bool obscure;
   final String hint;
+  final String confirmLabel;
 
   @override
   State<_OskDialog> createState() => _OskDialogState();
@@ -416,7 +432,7 @@ class _OskDialogState extends State<_OskDialog> {
               const SizedBox(width: 10),
               Expanded(
                   child: _OskKey(
-                      label: '完成',
+                      label: widget.confirmLabel,
                       wide: true,
                       primary: true,
                       onPressed: () => Navigator.of(context).pop(_text))),

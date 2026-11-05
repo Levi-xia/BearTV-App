@@ -1,3 +1,4 @@
+import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
 
 import '../core/theme.dart';
@@ -12,6 +13,7 @@ class SelectableChip extends StatelessWidget {
     required this.label,
     required this.selected,
     required this.onPressed,
+    this.onMenu,
     this.focusNode,
     this.autofocus = false,
   });
@@ -19,8 +21,21 @@ class SelectableChip extends StatelessWidget {
   final String label;
   final bool selected;
   final VoidCallback onPressed;
+
+  /// Optional remote-MENU action (e.g. delete the item this chip represents).
+  final VoidCallback? onMenu;
   final FocusNode? focusNode;
   final bool autofocus;
+
+  KeyEventResult _handleKey(FocusNode node, KeyEvent event) {
+    if ((event is KeyDownEvent || event is KeyRepeatEvent) &&
+        event.logicalKey == LogicalKeyboardKey.contextMenu &&
+        onMenu != null) {
+      onMenu!();
+      return KeyEventResult.handled;
+    }
+    return KeyEventResult.ignored;
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -29,6 +44,7 @@ class SelectableChip extends StatelessWidget {
       autofocus: autofocus,
       ensureVisibleAlignment: 0.5,
       focusNode: focusNode,
+      onKeyEvent: onMenu == null ? null : _handleKey,
       builder: (context, focused) {
         // Keep the layout footprint identical across states so a focused chip
         // never grows and reflows a Wrap row (pushing the last chip to the next
