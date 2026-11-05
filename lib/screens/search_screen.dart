@@ -6,6 +6,7 @@ import '../core/app_scope.dart';
 import '../core/theme.dart';
 import '../data/pinyin_ime.dart';
 import '../data/vod/cms_models.dart';
+import '../widgets/banded_focus.dart';
 import '../widgets/focus_fx.dart';
 import '../widgets/focusable.dart';
 import '../widgets/masonry.dart';
@@ -31,6 +32,12 @@ class _SearchScreenState extends State<SearchScreen> {
   // First keyboard key's node, so we can claim focus for it on entry (autofocus
   // alone loses to the header 🔍 that opened the page).
   final FocusNode _firstKey = FocusNode();
+
+  // The two halves of the page are separate D-pad lanes: a vertical press on the
+  // keypad walks the keypad's own rows instead of jumping into the poster grid
+  // beside it (and vice versa).
+  final Object _inputLane = Object();
+  final Object _resultsLane = Object();
 
   @override
   void initState() {
@@ -147,42 +154,55 @@ class _SearchScreenState extends State<SearchScreen> {
   @override
   Widget build(BuildContext context) {
     final systemIme = AppScope.of(context).searchUseSystemIme;
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(AppDims.pad, 176, AppDims.pad, 40),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          // Left = input panel: either the device's system IME (native field +
-          // system keyboard) or the built-in offline pinyin keyboard. The right
-          // result grid gets the larger share for a nicer poster layout.
-          Expanded(
-            flex: 5,
-            child: systemIme
-                ? const _SystemInputPanel()
-                : _KeyboardPanel(
-                    query: _q,
-                    pinyin: _py,
-                    zh: _zh,
-                    // Letters are uppercase only in English mode with Shift on;
-                    // pinyin always composes lowercase.
-                    upper: !_zh && _shift,
-                    imeReady: _ime != null,
-                    candidates: _cands,
-                    onChar: _onChar,
-                    onSpace: _space,
-                    onBackspace: _backspace,
-                    onClear: _clear,
-                    onSearch: _submit,
-                    onToggleMode: _toggleMode,
-                    onToggleCase: _toggleCase,
-                    onPick: _pick,
-                    onHistoryPick: _pickHistory,
-                    firstKeyNode: _firstKey,
-                  ),
-          ),
-          const SizedBox(width: 40),
-          const Expanded(flex: 6, child: _Results()),
-        ],
+    return FocusTraversalGroup(
+      // Round-by-round D-pad movement: Up/Down takes the nearest row, then the
+      // nearest element inside it (see [BandedTraversalPolicy]). Without it the
+      // keypad's top-right key sent Up straight to the header 🔍, skipping the
+      // history strip above it, because nothing overlapped that column.
+      policy: const BandedTraversalPolicy(),
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(AppDims.pad, 176, AppDims.pad, 40),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            // Left = input panel: either the device's system IME (native field +
+            // system keyboard) or the built-in offline pinyin keyboard. The right
+            // result grid gets the larger share for a nicer poster layout.
+            Expanded(
+              flex: 5,
+              child: FocusLane(
+                id: _inputLane,
+                child: systemIme
+                    ? const _SystemInputPanel()
+                    : _KeyboardPanel(
+                        query: _q,
+                        pinyin: _py,
+                        zh: _zh,
+                        // Letters are uppercase only in English mode with Shift
+                        // on; pinyin always composes lowercase.
+                        upper: !_zh && _shift,
+                        imeReady: _ime != null,
+                        candidates: _cands,
+                        onChar: _onChar,
+                        onSpace: _space,
+                        onBackspace: _backspace,
+                        onClear: _clear,
+                        onSearch: _submit,
+                        onToggleMode: _toggleMode,
+                        onToggleCase: _toggleCase,
+                        onPick: _pick,
+                        onHistoryPick: _pickHistory,
+                        firstKeyNode: _firstKey,
+                      ),
+              ),
+            ),
+            const SizedBox(width: 40),
+            Expanded(
+              flex: 6,
+              child: FocusLane(id: _resultsLane, child: const _Results()),
+            ),
+          ],
+        ),
       ),
     );
   }
