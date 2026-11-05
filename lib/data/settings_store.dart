@@ -14,10 +14,21 @@ import 'vod/cms_sources.dart';
 /// backing store degrades to in-memory when persistence is unavailable (e.g.
 /// under `flutter test`).
 class SettingsStore {
-  SettingsStore({this.seedDefaultKey = true, KeyValueStore? store})
-      : _store = store ?? SharedPrefsStore();
+  SettingsStore({
+    this.seedDefaultKey = true,
+    KeyValueStore? store,
+    List<IptvSource> Function()? seededIptvSources,
+    List<DanmakuHost> Function()? seededDanmakuHosts,
+  })  : _store = store ?? SharedPrefsStore(),
+        _iptvSeed = seededIptvSources,
+        _danmakuSeed = seededDanmakuHosts;
 
   final KeyValueStore _store;
+
+  /// Overrides for the build-time seeds; tests inject them because the
+  /// `String.fromEnvironment` defines are empty under `flutter test`.
+  final List<IptvSource> Function()? _iptvSeed;
+  final List<DanmakuHost> Function()? _danmakuSeed;
 
   /// When true (production default), an unset key falls back to
   /// [defaultTmdbApiKey], which is the build-time `TMDB_API_KEY` define. An
@@ -47,7 +58,23 @@ class SettingsStore {
   static const _kIptvSources = 'iptvSources';
   static const _kIptvSelectedSourceId = 'iptvSelectedSourceId';
 
-  Future<void> init() => _store.init();
+  /// Load the backing store, then apply the build-time config: a non-empty
+  /// `IPTV_PLAYLIST_URL` / `DANMAKU_BASE_URL`+`DANMAKU_TOKEN` overwrites the
+  /// saved sources/hosts, so changing `secrets.json` and rebuilding is visible
+  /// in Settings. An empty define leaves the user's saved config untouched.
+  Future<void> init() async {
+    await _store.init();
+    final iptv = _defaultIptvSources();
+    if (iptv.isNotEmpty) {
+      await setIptvSources(iptv);
+      await setIptvSelectedSourceId(iptv.first.id);
+    }
+    final hosts = _defaultDanmakuHosts();
+    if (hosts.isNotEmpty) {
+      await setDanmakuHosts(hosts);
+      await setDanmakuDefaultHostId(hosts.first.id);
+    }
+  }
 
   // --- Search input method --------------------------------------------------
 
@@ -179,28 +206,30 @@ class SettingsStore {
   Future<void> setDanmakuConfig(DanmakuConfig c) =>
       _store.setString(_kDanmakuConfig, jsonEncode(c.toJson()));
 
-  /// Configured danmaku hosts. On first run seeds the build-time default (if
-  /// any), otherwise starts empty and the user adds one in Settings. Deleting
-  /// every host persists `[]` (not the defaults) so removal sticks.
+  /// Configured danmaku hosts. A non-empty build-time `DANMAKU_BASE_URL` +
+  /// `DANMAKU_TOKEN` replaces the saved list in [init]; when the build injects
+  /// nothing, the saved list is used as-is (empty on first run).
   List<DanmakuHost> get danmakuHosts {
     final raw = _store.getString(_kDanmakuHosts);
-    if (raw == null) return _seededDanmakuHosts();
+    if (raw == null) return _defaultDanmakuHosts();
     try {
       final decoded = jsonDecode(raw);
       if (decoded is List) {
         return decoded
             .whereType<Map>()
             .map((m) => DanmakuHost.fromJson(Map<String, dynamic>.from(m)))
-            .where((h) => h.baseUrl.trim().isNotEmpty && h.token.trim().isNotEmpty)
+            .where((h) =>
+                h.baseUrl.trim().isNotEmpty && h.token.trim().isNotEmpty)
             .toList();
       }
     } catch (_) {
       // Corrupt value: fall back to the build-time default (if any).
     }
-    return _seededDanmakuHosts();
+    return _defaultDanmakuHosts();
   }
 
-  static List<DanmakuHost> _seededDanmakuHosts() {
+  List<DanmakuHost> _defaultDanmakuHosts() {
+    if (_danmakuSeed != null) return _danmakuSeed();
     final d = defaultDanmakuHost();
     return d.baseUrl.isEmpty || d.token.isEmpty ? const [] : [d];
   }
@@ -220,11 +249,12 @@ class SettingsStore {
 
   // --- IPTV (直播) source configuration -------------------------------------
 
-  /// Configured IPTV playlist sources. On first run seeds the build-time
-  /// default (if any), otherwise starts empty and the user adds a playlist.
+  /// Configured IPTV playlist sources. A non-empty build-time
+  /// `IPTV_PLAYLIST_URL` replaces the saved list in [init]; when the build
+  /// injects nothing, the saved list is used as-is (empty on first run).
   List<IptvSource> get iptvSources {
     final raw = _store.getString(_kIptvSources);
-    if (raw == null) return defaultIptvSources();
+    if (raw == null) return _defaultIptvSources();
     try {
       final decoded = jsonDecode(raw);
       if (decoded is List) {
@@ -237,8 +267,11 @@ class SettingsStore {
     } catch (_) {
       // Corrupt value: fall back to defaults.
     }
-    return defaultIptvSources();
+    return _defaultIptvSources();
   }
+
+  List<IptvSource> _defaultIptvSources() =>
+      _iptvSeed?.call() ?? defaultIptvSources();
 
   Future<void> setIptvSources(List<IptvSource> sources) => _store.setString(
       _kIptvSources, jsonEncode(sources.map((s) => s.toJson()).toList()));

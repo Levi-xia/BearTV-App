@@ -54,10 +54,10 @@ class IptvSource {
       );
 }
 
-/// Seeded on first run from the build-time `IPTV_PLAYLIST_URL` define (see
-/// [Env]). Empty in an open-source/CI build, so the 直播 tab starts empty and
-/// users add their own playlist in Settings. The upstream list itself is not
-/// committed.
+/// Source injected at build time through `IPTV_PLAYLIST_URL` (see [Env]). When
+/// non-empty it overwrites the saved source list on startup (see
+/// [SettingsStore.init]); a build without the define leaves the user's own
+/// sources untouched. The upstream list itself is not committed.
 List<IptvSource> defaultIptvSources() {
   final url = Env.iptvPlaylistUrl.trim();
   if (url.isEmpty) return const [];

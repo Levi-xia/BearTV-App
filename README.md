@@ -123,13 +123,14 @@ flutter run --dart-define-from-file=secrets.json
 | `TMDB_PROXY_BASE` | TMDB 反代 origin（拼 `<origin>/3`、`<origin>/t/p`） | 直连 TMDB |
 | `CMS_SITES_JSON` | 采集源 JSON 数组字符串 | 无内置源 |
 | `DEFAULT_SELECTED_JSON` | 默认启用的源 id 数组 | 全选 |
-| `DANMAKU_BASE_URL` | 弹幕服务地址，首次启动作为默认弹幕源 | 无内置弹幕源，可在设置中添加 |
-| `DANMAKU_TOKEN` | 弹幕服务 token（必填，与应用内配置一致） | 无内置弹幕源 |
-| `DANMAKU_NAME` | 内置弹幕源显示名称 | `默认弹幕源` |
-| `IPTV_PLAYLIST_URL` | 默认直播源 M3U 地址 | 直播页为空 |
-| `IPTV_PLAYLIST_NAME` | 默认直播源名称 | `默认直播源` |
+| `DANMAKU_BASE_URL` | 弹幕服务地址；非空时启动覆盖应用内弹幕源配置 | 保留应用内配置 |
+| `DANMAKU_TOKEN` | 弹幕服务 token（必填） | 保留应用内配置 |
+| `DANMAKU_NAME` | 注入弹幕源的显示名称 | `默认弹幕源` |
+| `IPTV_PLAYLIST_URL` | 直播源 M3U 地址；非空时启动覆盖应用内直播源配置 | 保留应用内配置 |
+| `IPTV_PLAYLIST_NAME` | 注入直播源的显示名称 | `默认直播源` |
 
 > 编译期注入只是把值写进 AOT 常量，**不是加密**，可从二进制还原；请勿在公开产物中携带他人凭证。
+> 直播源与弹幕源字段非空时，每次启动都会覆盖应用内已保存的对应配置；留空则完全保留应用内配置。
 > 仓库与 GitHub Actions 构建均使用空默认值，公开下载的 APK 不含任何资源或密钥，需要用户在应用内自行配置。
 
 ### 采集源格式

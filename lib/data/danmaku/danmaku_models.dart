@@ -64,10 +64,10 @@ class DanmakuHost {
   }
 }
 
-/// Built-in danmaku host from the build-time `DANMAKU_BASE_URL` /
-/// `DANMAKU_TOKEN` defines (see [Env]). Empty in an open-source/CI build, in
-/// which case [DanmakuController] disables the feature instead of issuing
-/// requests to a blank URL.
+/// Host injected at build time through `DANMAKU_BASE_URL` / `DANMAKU_TOKEN`
+/// (see [Env]). When non-empty it overwrites the saved host list on startup
+/// (see [SettingsStore.init]); a build without the defines leaves the user's
+/// own hosts untouched.
 DanmakuHost defaultDanmakuHost() {
   final name = Env.danmakuName.trim();
   return DanmakuHost(
