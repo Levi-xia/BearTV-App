@@ -21,7 +21,7 @@ final List<String> kDefaultSelected = _parseIds(
 );
 
 /// Max custom sources a user may add (BearTV `CUSTOM_API_CONFIG.maxSources`).
-const int kMaxCustomSites = 5;
+const int kMaxCustomSites = 20;
 
 /// Lookup a built-in site by id.
 CmsSite? builtinSiteById(String id) {

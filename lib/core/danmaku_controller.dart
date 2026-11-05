@@ -9,20 +9,54 @@ import '../data/settings_store.dart';
 /// `danmakuStore` — auto-match by formatted title, an LRU cache, density
 /// sampling for huge episodes, and a manual search/pick path.
 ///
+/// Sources are user-managed: [hosts] comes from [SettingsStore] after [init],
+/// and every request goes to [activeHost] (the user's default, else the first
+/// configured source). A host injected through the constructor is used only
+/// when no settings were loaded — a test seam.
+///
 /// The rendering widget ([DanmakuOverlay]) listens to this: it resets its
 /// flying set whenever [epoch] changes (a new load / clear) and reads [config].
 class DanmakuController extends ChangeNotifier {
   DanmakuController({DanmakuClient? client, DanmakuHost? host})
       : _client = client ?? DanmakuClient(),
-        _host = host ?? defaultDanmakuHost();
+        _fallbackHost = host ?? defaultDanmakuHost();
 
   final DanmakuClient _client;
-  final DanmakuHost _host;
 
-  /// False when no danmaku host was configured at build time — every network
-  /// entry point degrades to a no-op instead of hitting a blank URL.
-  bool get _hasHost => _host.baseUrl.isNotEmpty && _host.token.isNotEmpty;
+  /// Used only while [_settings] is null (tests / pre-init). Production loads
+  /// the persisted host list in [init].
+  final DanmakuHost _fallbackHost;
+
   SettingsStore? _settings;
+  List<DanmakuHost> _hosts = const [];
+  String? _defaultHostId;
+
+  /// Configured danmaku sources, in display order. Empty means the feature has
+  /// no destination — every network entry point degrades to a status message.
+  List<DanmakuHost> get hosts {
+    if (_settings != null) return _hosts;
+    if (_hosts.isNotEmpty) return _hosts;
+    return _fallbackHost.baseUrl.trim().isEmpty ||
+            _fallbackHost.token.trim().isEmpty
+        ? const []
+        : [_fallbackHost];
+  }
+
+  /// The host every request uses: the configured default, else the first.
+  DanmakuHost? get activeHost {
+    final list = hosts;
+    if (list.isEmpty) return null;
+    if (_settings != null) {
+      for (final h in list) {
+        if (h.id == _defaultHostId) return h;
+      }
+    }
+    return list.first;
+  }
+
+  /// Effective default id for the settings page's selected chip. Falls back to
+  /// the first host when the user never picked one.
+  String? get activeHostId => activeHost?.id;
 
   DanmakuConfig _config = const DanmakuConfig();
   DanmakuConfig get config => _config;
@@ -49,14 +83,24 @@ class DanmakuController extends ChangeNotifier {
   // Above this many comments per episode we downsample (low-end GPU budget).
   static const int _sampleThreshold = 10000;
 
-  /// Load persisted config. Call once from [AppController.init].
+  /// Load persisted config + danmaku sources. Call once from
+  /// [AppController.init].
   void init(SettingsStore settings) {
     _settings = settings;
     _config = settings.danmakuConfig;
+    _hosts = settings.danmakuHosts;
+    _defaultHostId = settings.danmakuDefaultHostId;
+    // A default pointing at a removed host falls back to the first source.
+    if (_defaultHostId != null && !_hosts.any((h) => h.id == _defaultHostId)) {
+      _defaultHostId = _hosts.isNotEmpty ? _hosts.first.id : null;
+    }
   }
 
-  String _titleKey(String name) => 'name::$name';
-  String _epKey(int id) => 'ep::$id';
+  String _hostKey(DanmakuHost host) =>
+      host.id.isNotEmpty ? host.id : host.baseUrl;
+  String _titleKey(DanmakuHost host, String name) =>
+      '${_hostKey(host)}::name::$name';
+  String _epKey(DanmakuHost host, int id) => '${_hostKey(host)}::ep::$id';
 
   void _replaceItems(List<DanmakuItem> v) {
     _items = v;
@@ -75,8 +119,9 @@ class DanmakuController extends ChangeNotifier {
     String? detailTitle,
   }) async {
     if (!_config.enabled) return;
-    if (!_hasHost) {
-      statusText = '未配置弹幕服务';
+    final host = activeHost;
+    if (host == null) {
+      statusText = '未配置弹幕服务，请在设置中添加弹幕源';
       _replaceItems(const []);
       notifyListeners();
       return;
@@ -92,9 +137,9 @@ class DanmakuController extends ChangeNotifier {
     final token = ++_loadToken;
 
     for (final name in names) {
-      final cached = _cache[_titleKey(name)];
+      final cached = _cache[_titleKey(host, name)];
       if (cached != null) {
-        _touch(_titleKey(name));
+        _touch(_titleKey(host, name));
         matches = const [];
         loading = false;
         statusText = cached.isEmpty ? '未找到弹幕' : '已加载 ${cached.length} 条弹幕';
@@ -123,7 +168,7 @@ class DanmakuController extends ChangeNotifier {
     for (final name in names) {
       if (DateTime.now().isAfter(deadline)) break;
       try {
-        final result = await _client.match(_host, name);
+        final result = await _client.match(host, name);
         if (token != _loadToken) return;
         answered = true;
         if (result.matches.isEmpty) continue;
@@ -162,7 +207,7 @@ class DanmakuController extends ChangeNotifier {
 
     final List<DanmakuItem> fetched;
     try {
-      fetched = await _client.fetchComments(_host, matched.first.episodeId);
+      fetched = await _client.fetchComments(host, matched.first.episodeId);
     } on DanmakuRequestException catch (e) {
       if (token != _loadToken) return;
       // Do NOT cache: a transient failure must not look like "no danmaku".
@@ -173,7 +218,7 @@ class DanmakuController extends ChangeNotifier {
     }
     if (token != _loadToken) return;
     final sampled = _sample(fetched);
-    final key = _titleKey(usedName ?? names.first);
+    final key = _titleKey(host, usedName ?? names.first);
     _cache[key] = sampled;
     _trim();
     loading = false;
@@ -188,8 +233,9 @@ class DanmakuController extends ChangeNotifier {
   Future<void> search(String keyword) async {
     final name = keyword.trim();
     if (name.isEmpty) return;
-    if (!_hasHost) {
-      statusText = '未配置弹幕服务';
+    final host = activeHost;
+    if (host == null) {
+      statusText = '未配置弹幕服务，请在设置中添加弹幕源';
       matches = const [];
       notifyListeners();
       return;
@@ -202,7 +248,7 @@ class DanmakuController extends ChangeNotifier {
     notifyListeners();
     List<DanmakuMatch> ms;
     try {
-      ms = (await _client.match(_host, name)).matches;
+      ms = (await _client.match(host, name)).matches;
     } on DanmakuRequestException catch (e) {
       if (token != _loadToken) return;
       loading = false;
@@ -219,11 +265,17 @@ class DanmakuController extends ChangeNotifier {
 
   /// Load comments for a user-picked match.
   Future<void> loadFromMatch(DanmakuMatch m) async {
+    final host = activeHost;
+    if (host == null) {
+      statusText = '未配置弹幕服务，请在设置中添加弹幕源';
+      notifyListeners();
+      return;
+    }
     final token = ++_loadToken;
     loading = true;
     statusText = '加载弹幕中…';
     notifyListeners();
-    final key = _epKey(m.episodeId);
+    final key = _epKey(host, m.episodeId);
     final cached = _cache[key];
     List<DanmakuItem> items;
     if (cached != null) {
@@ -231,7 +283,7 @@ class DanmakuController extends ChangeNotifier {
       items = cached;
     } else {
       try {
-        final fetched = await _client.fetchComments(_host, m.episodeId);
+        final fetched = await _client.fetchComments(host, m.episodeId);
         if (token != _loadToken) return;
         items = _sample(fetched);
       } on DanmakuRequestException catch (e) {
@@ -275,6 +327,69 @@ class DanmakuController extends ChangeNotifier {
   Future<void> setScrollSeconds(double v) =>
       _save(_config.copyWith(scrollSeconds: v));
   Future<void> setArea(double v) => _save(_config.copyWith(area: v));
+
+  // --- Host management (persist + notify) -----------------------------------
+
+  /// Add a source. Returns null on success, else a validation message. The
+  /// first source added becomes the default so matching works immediately.
+  Future<String?> addHost(String name, String baseUrl, String token) async {
+    final n = name.trim();
+    final base = baseUrl.trim().replaceAll(RegExp(r'/+$'), '');
+    final t = token.trim();
+    if (base.isEmpty) return '请填写弹幕服务地址';
+    if (!base.startsWith('http://') && !base.startsWith('https://')) {
+      return '地址需以 http 开头';
+    }
+    if (t.isEmpty) return '请填写弹幕服务 Token';
+    if (_hosts.any((h) => h.baseUrl == base && h.token == t)) {
+      return '该弹幕源已存在';
+    }
+    final wasEmpty = _hosts.isEmpty;
+    final host = DanmakuHost(
+      id: 'dm_${DateTime.now().microsecondsSinceEpoch}',
+      name: n,
+      baseUrl: base,
+      token: t,
+    );
+    _hosts = [..._hosts, host];
+    await _settings?.setDanmakuHosts(_hosts);
+    // First source ever: make it the default so matching works immediately.
+    // With existing sources, the current default (explicit or first) stands.
+    if (wasEmpty) {
+      _defaultHostId = host.id;
+      await _settings?.setDanmakuDefaultHostId(host.id);
+    }
+    _cache.clear(); // cached comments are host-specific
+    notifyListeners();
+    return null;
+  }
+
+  /// Remove a source. When it was the default, falls back to the first
+  /// remaining source (or none).
+  Future<void> removeHost(String id) async {
+    final next = _hosts.where((h) => h.id != id).toList();
+    if (next.length == _hosts.length) return;
+    _hosts = next;
+    _loadToken++; // cancel any in-flight match against the removed host
+    await _settings?.setDanmakuHosts(_hosts);
+    if (_defaultHostId == id) {
+      _defaultHostId = _hosts.isNotEmpty ? _hosts.first.id : null;
+      await _settings?.setDanmakuDefaultHostId(_defaultHostId);
+    }
+    _cache.clear();
+    notifyListeners();
+  }
+
+  /// Make [id] the default source for auto/manual matching.
+  Future<void> setDefaultHost(String id) async {
+    if (_defaultHostId == id) return;
+    if (!_hosts.any((h) => h.id == id)) return;
+    _defaultHostId = id;
+    _loadToken++; // cancel any in-flight match against the previous host
+    await _settings?.setDanmakuDefaultHostId(id);
+    _cache.clear();
+    notifyListeners();
+  }
 
   // --- Internals ------------------------------------------------------------
 

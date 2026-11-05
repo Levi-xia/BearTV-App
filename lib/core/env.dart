@@ -33,6 +33,12 @@ class Env {
       String.fromEnvironment('DANMAKU_BASE_URL');
   static const String danmakuToken = String.fromEnvironment('DANMAKU_TOKEN');
 
+  /// Display name seeded for the built-in danmaku host (settings page list).
+  static const String danmakuName = String.fromEnvironment(
+    'DANMAKU_NAME',
+    defaultValue: '默认弹幕源',
+  );
+
   /// Seeded IPTV playlist. Empty → no default channel list.
   static const String iptvPlaylistUrl =
       String.fromEnvironment('IPTV_PLAYLIST_URL');

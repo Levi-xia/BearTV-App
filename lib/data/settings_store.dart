@@ -42,6 +42,8 @@ class SettingsStore {
   static const _kSystemIme = 'searchUseSystemIme';
   static const _kSearchHistory = 'searchHistory';
   static const _kDanmakuConfig = 'danmakuConfig';
+  static const _kDanmakuHosts = 'danmakuHosts';
+  static const _kDanmakuDefaultHostId = 'danmakuDefaultHostId';
   static const _kIptvSources = 'iptvSources';
   static const _kIptvSelectedSourceId = 'iptvSelectedSourceId';
 
@@ -176,6 +178,45 @@ class SettingsStore {
 
   Future<void> setDanmakuConfig(DanmakuConfig c) =>
       _store.setString(_kDanmakuConfig, jsonEncode(c.toJson()));
+
+  /// Configured danmaku hosts. On first run seeds the build-time default (if
+  /// any), otherwise starts empty and the user adds one in Settings. Deleting
+  /// every host persists `[]` (not the defaults) so removal sticks.
+  List<DanmakuHost> get danmakuHosts {
+    final raw = _store.getString(_kDanmakuHosts);
+    if (raw == null) return _seededDanmakuHosts();
+    try {
+      final decoded = jsonDecode(raw);
+      if (decoded is List) {
+        return decoded
+            .whereType<Map>()
+            .map((m) => DanmakuHost.fromJson(Map<String, dynamic>.from(m)))
+            .where((h) => h.baseUrl.trim().isNotEmpty && h.token.trim().isNotEmpty)
+            .toList();
+      }
+    } catch (_) {
+      // Corrupt value: fall back to the build-time default (if any).
+    }
+    return _seededDanmakuHosts();
+  }
+
+  static List<DanmakuHost> _seededDanmakuHosts() {
+    final d = defaultDanmakuHost();
+    return d.baseUrl.isEmpty || d.token.isEmpty ? const [] : [d];
+  }
+
+  Future<void> setDanmakuHosts(List<DanmakuHost> hosts) => _store.setString(
+      _kDanmakuHosts, jsonEncode(hosts.map((h) => h.toJson()).toList()));
+
+  /// The host id used for auto-matching. Null when the user never picked one
+  /// (the first configured host is used) or when there are no hosts at all.
+  String? get danmakuDefaultHostId {
+    final v = _store.getString(_kDanmakuDefaultHostId)?.trim();
+    return (v == null || v.isEmpty) ? null : v;
+  }
+
+  Future<void> setDanmakuDefaultHostId(String? id) =>
+      _store.setString(_kDanmakuDefaultHostId, id ?? '');
 
   // --- IPTV (直播) source configuration -------------------------------------
 

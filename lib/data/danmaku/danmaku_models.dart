@@ -6,32 +6,77 @@ library;
 import '../../core/env.dart';
 
 /// A dandanplay-protocol danmaku host: `{baseUrl}/{token}/api/v2/...`.
+///
+/// [id] + [name] make multiple hosts manageable from the settings page; they
+/// default to empty so older call sites (and tests) can keep constructing a
+/// host from just [baseUrl] + [token]. [token] is required — every request path
+/// carries it.
 class DanmakuHost {
+  final String id;
+  final String name;
   final String baseUrl;
   final String token;
 
-  const DanmakuHost({required this.baseUrl, required this.token});
+  const DanmakuHost({
+    this.id = '',
+    this.name = '',
+    required this.baseUrl,
+    required this.token,
+  });
 
-  String get matchUrl => '$baseUrl/$token/api/v2/match';
+  /// User-facing label: the configured name, else the host, else the raw URL.
+  String get label {
+    final n = name.trim();
+    if (n.isNotEmpty) return n;
+    final host = Uri.tryParse(baseUrl.trim())?.host ?? '';
+    return host.isNotEmpty ? host : baseUrl.trim();
+  }
+
+  /// Normalized `{base}/{token}/api/v2` root (no trailing slash on the base).
+  String get apiRoot {
+    final base = baseUrl.trim().replaceAll(RegExp(r'/+$'), '');
+    return '$base/${token.trim()}/api/v2';
+  }
+
+  String get matchUrl => '$apiRoot/match';
   String commentUrl(int episodeId) =>
-      '$baseUrl/$token/api/v2/comment/$episodeId?format=xml&duration=true';
+      '$apiRoot/comment/$episodeId?format=xml&duration=true';
 
-  Map<String, dynamic> toJson() => {'baseUrl': baseUrl, 'token': token};
+  Map<String, dynamic> toJson() => {
+        'id': id,
+        'name': name,
+        'baseUrl': baseUrl,
+        'token': token,
+      };
 
-  factory DanmakuHost.fromJson(Map<String, dynamic> j) => DanmakuHost(
-        baseUrl: (j['baseUrl'] as String?) ?? '',
-        token: (j['token'] as String?) ?? '',
-      );
+  factory DanmakuHost.fromJson(Map<String, dynamic> j) {
+    final baseUrl = (j['baseUrl'] as String?) ?? '';
+    final token = (j['token'] as String?) ?? '';
+    final id = (j['id'] as String?)?.trim() ?? '';
+    return DanmakuHost(
+      // Deterministic fallback keeps a legacy entry (no id) addressable across
+      // launches, so it can still be selected as the default.
+      id: id.isEmpty ? 'dm_${baseUrl}_$token' : id,
+      name: (j['name'] as String?) ?? '',
+      baseUrl: baseUrl,
+      token: token,
+    );
+  }
 }
 
 /// Built-in danmaku host from the build-time `DANMAKU_BASE_URL` /
 /// `DANMAKU_TOKEN` defines (see [Env]). Empty in an open-source/CI build, in
 /// which case [DanmakuController] disables the feature instead of issuing
 /// requests to a blank URL.
-DanmakuHost defaultDanmakuHost() => DanmakuHost(
-      baseUrl: Env.danmakuBaseUrl.trim(),
-      token: Env.danmakuToken.trim(),
-    );
+DanmakuHost defaultDanmakuHost() {
+  final name = Env.danmakuName.trim();
+  return DanmakuHost(
+    id: 'danmaku_default',
+    name: name.isEmpty ? '默认弹幕源' : name,
+    baseUrl: Env.danmakuBaseUrl.trim(),
+    token: Env.danmakuToken.trim(),
+  );
+}
 
 /// One parsed comment. [time] is the playback second it appears at; [mode] is
 /// 0=scroll (right→left) / 1=top / 2=bottom; [color] is a packed 0xRRGGBB int.

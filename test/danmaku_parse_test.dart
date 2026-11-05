@@ -109,6 +109,31 @@ void main() {
       expect(h.commentUrl(9),
           'https://x.com/tok/api/v2/comment/9?format=xml&duration=true');
     });
+
+    test('tolerates a trailing slash', () {
+      const h = DanmakuHost(baseUrl: 'https://x.com/', token: 'tok');
+      expect(h.matchUrl, 'https://x.com/tok/api/v2/match');
+      expect(h.commentUrl(9),
+          'https://x.com/tok/api/v2/comment/9?format=xml&duration=true');
+    });
+
+    test('label falls back from name to host', () {
+      const named =
+          DanmakuHost(name: '我的源', baseUrl: 'https://x.com', token: 'tok');
+      expect(named.label, '我的源');
+      const unnamed = DanmakuHost(baseUrl: 'https://x.com', token: 'tok');
+      expect(unnamed.label, 'x.com');
+    });
+
+    test('round-trips id / name through json', () {
+      const h = DanmakuHost(
+          id: 'dm_1', name: '源', baseUrl: 'https://x.com', token: 'tok');
+      final back = DanmakuHost.fromJson(h.toJson());
+      expect(back.id, 'dm_1');
+      expect(back.name, '源');
+      expect(back.baseUrl, 'https://x.com');
+      expect(back.token, 'tok');
+    });
   });
 
   group('DanmakuConfig', () {

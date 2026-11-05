@@ -3,6 +3,7 @@ import 'package:flutter/widgets.dart';
 
 import '../core/app_scope.dart';
 import '../core/theme.dart';
+import '../data/danmaku/danmaku_models.dart';
 import '../data/vod/cms_sources.dart';
 import '../widgets/chips.dart';
 import '../widgets/focus_fx.dart';
@@ -170,6 +171,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
                         subtitle:
                             '添加 M3U / M3U8 播放列表地址，用于「直播」标签页。可添加多个源并在直播页快捷切换。',
                         child: const _IptvSourcesSection(),
+                      ),
+                      const SizedBox(height: 22),
+                      _sectionCard(
+                        title: '弹幕源配置',
+                        subtitle:
+                            '添加 dandanplay 兼容的弹幕服务（地址 + Token，Token 必填）。可添加多个源，点击名称设为默认，播放时自动使用默认源匹配弹幕。',
+                        child: const _DanmakuHostsSection(),
                       ),
                       const SizedBox(height: 22),
                       _sectionCard(
@@ -771,6 +779,144 @@ class _IptvSourcesSectionState extends State<_IptvSourcesSection> {
                 value: _url,
                 hint: 'M3U 地址，例如：https://host/playlist.m3u',
                 onPressed: _editUrl),
+            const SizedBox(height: 16),
+            _Btn(label: '添加', primary: true, onPressed: _add),
+          ],
+        );
+      },
+    );
+  }
+}
+
+/// Danmaku (弹幕) source management: list + remove existing dandanplay-compatible
+/// hosts (address + token) and add a new one. Tapping a host's name makes it the
+/// default used for auto-matching. Mirrors [_IptvSourcesSection]; wrapped in an
+/// AnimatedBuilder since the state lives on the danmaku controller.
+class _DanmakuHostsSection extends StatefulWidget {
+  const _DanmakuHostsSection();
+
+  @override
+  State<_DanmakuHostsSection> createState() => _DanmakuHostsSectionState();
+}
+
+class _DanmakuHostsSectionState extends State<_DanmakuHostsSection> {
+  String _name = '';
+  String _baseUrl = '';
+  String _token = '';
+
+  Future<void> _editName() async {
+    final r = await showOnScreenKeyboard(context,
+        title: '弹幕源名称', initial: _name, hint: '可选，例如：我的弹幕源');
+    if (r != null && mounted) setState(() => _name = r.trim());
+  }
+
+  Future<void> _editBaseUrl() async {
+    final r = await showOnScreenKeyboard(context,
+        title: '弹幕服务地址', initial: _baseUrl, hint: 'https://danmu.example.com');
+    if (r != null && mounted) setState(() => _baseUrl = r.trim());
+  }
+
+  Future<void> _editToken() async {
+    final r = await showOnScreenKeyboard(context,
+        title: '弹幕服务 Token', initial: _token, hint: '必填，弹幕服务的访问 Token');
+    if (r != null && mounted) setState(() => _token = r.trim());
+  }
+
+  Future<void> _add() async {
+    final app = AppScope.read(context);
+    final err = await app.danmaku.addHost(_name, _baseUrl, _token);
+    if (!mounted) return;
+    if (err != null) {
+      app.showToast(err);
+    } else {
+      setState(() {
+        _name = '';
+        _baseUrl = '';
+        _token = '';
+      });
+      app.showToast('已添加弹幕源');
+    }
+  }
+
+  /// One-line description with the token partially masked.
+  static String _describe(DanmakuHost h) {
+    final t = h.token.trim();
+    final mask = t.length <= 4
+        ? '••••'
+        : '${t.substring(0, 2)}••••${t.substring(t.length - 2)}';
+    return '${h.baseUrl} · Token $mask';
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final app = AppScope.of(context);
+    return AnimatedBuilder(
+      animation: app.danmaku,
+      builder: (context, _) {
+        final d = app.danmaku;
+        final hosts = d.hosts;
+        final activeId = d.activeHostId;
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            if (hosts.isNotEmpty) ...[
+              const _SubLabel('已添加'),
+              const SizedBox(height: 8),
+              const Text('点击名称设为默认，播放时自动使用默认源匹配弹幕。',
+                  style: TextStyle(
+                      fontSize: 14,
+                      color: AppColors.textDim,
+                      fontFamilyFallback: kFontFallback)),
+              const SizedBox(height: 12),
+              for (final h in hosts)
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 10),
+                  child: Row(
+                    children: [
+                      SelectableChip(
+                        label: h.id == activeId ? '${h.label} · 默认' : h.label,
+                        selected: h.id == activeId,
+                        onPressed: () => d.setDefaultHost(h.id),
+                      ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: Text(_describe(h),
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(
+                                fontSize: 13,
+                                color: AppColors.textDim,
+                                fontFamilyFallback: kFontFallback)),
+                      ),
+                      const SizedBox(width: 12),
+                      _Btn(label: '删除', onPressed: () => d.removeHost(h.id)),
+                    ],
+                  ),
+                ),
+              const SizedBox(height: 22),
+            ] else
+              const Padding(
+                padding: EdgeInsets.only(bottom: 20),
+                child: Text('尚未添加弹幕源，添加后播放页会自动匹配弹幕。',
+                    style: TextStyle(
+                        fontSize: 15,
+                        color: AppColors.textDim,
+                        fontFamilyFallback: kFontFallback)),
+              ),
+            const _SubLabel('添加弹幕源'),
+            const SizedBox(height: 12),
+            _ValueField(
+                value: _name, hint: '名称（可选），例如：我的弹幕源', onPressed: _editName),
+            const SizedBox(height: 12),
+            _ValueField(
+                value: _baseUrl,
+                hint: '服务地址，例如：https://danmu.example.com',
+                onPressed: _editBaseUrl),
+            const SizedBox(height: 12),
+            _ValueField(
+                value: _token,
+                hint: 'Token（必填）',
+                onPressed: _editToken),
             const SizedBox(height: 16),
             _Btn(label: '添加', primary: true, onPressed: _add),
           ],

@@ -123,8 +123,9 @@ flutter run --dart-define-from-file=secrets.json
 | `TMDB_PROXY_BASE` | TMDB 反代 origin（拼 `<origin>/3`、`<origin>/t/p`） | 直连 TMDB |
 | `CMS_SITES_JSON` | 采集源 JSON 数组字符串 | 无内置源 |
 | `DEFAULT_SELECTED_JSON` | 默认启用的源 id 数组 | 全选 |
-| `DANMAKU_BASE_URL` | 弹幕服务地址 | 弹幕停用 |
-| `DANMAKU_TOKEN` | 弹幕服务 token | 弹幕停用 |
+| `DANMAKU_BASE_URL` | 弹幕服务地址，首次启动作为默认弹幕源 | 无内置弹幕源，可在设置中添加 |
+| `DANMAKU_TOKEN` | 弹幕服务 token（必填，与应用内配置一致） | 无内置弹幕源 |
+| `DANMAKU_NAME` | 内置弹幕源显示名称 | `默认弹幕源` |
 | `IPTV_PLAYLIST_URL` | 默认直播源 M3U 地址 | 直播页为空 |
 | `IPTV_PLAYLIST_NAME` | 默认直播源名称 | `默认直播源` |
 

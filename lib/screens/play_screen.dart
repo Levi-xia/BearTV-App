@@ -1316,6 +1316,13 @@ class _DanmakuSection extends StatelessWidget {
             Row(
               children: [
                 const _Label('弹幕'),
+                if (d.activeHost != null) ...[
+                  const SizedBox(width: 8),
+                  Text('· ${d.activeHost!.label}',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(fontSize: 13, color: AppColors.textDim, fontFamilyFallback: kFontFallback)),
+                ],
                 const SizedBox(width: 10),
                 if (d.statusText != null)
                   Flexible(

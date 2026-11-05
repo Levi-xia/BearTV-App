@@ -3,15 +3,18 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:bear_tv/core/danmaku_controller.dart';
 import 'package:bear_tv/data/danmaku/danmaku_client.dart';
 import 'package:bear_tv/data/danmaku/danmaku_models.dart';
+import 'package:bear_tv/data/kv_store.dart';
+import 'package:bear_tv/data/settings_store.dart';
 
 const _host = DanmakuHost(baseUrl: 'http://dm.test', token: 't');
 
-/// Records the requested file names / episode ids and lets each test script
-/// success, an empty answer, or a transport failure.
+/// Records the requested file names / episode ids / hosts and lets each test
+/// script success, an empty answer, or a transport failure.
 class _FakeClient extends DanmakuClient {
   _FakeClient();
 
   final List<String> matchCalls = [];
+  final List<DanmakuHost> matchHosts = [];
   final List<int> commentCalls = [];
 
   DanmakuRequestException? matchError;
@@ -23,6 +26,7 @@ class _FakeClient extends DanmakuClient {
   @override
   Future<DanmakuMatchResult> match(DanmakuHost host, String fileName) async {
     matchCalls.add(fileName);
+    matchHosts.add(host);
     if (matchError != null) throw matchError!;
     return DanmakuMatchResult(exact: matchedExactly, matches: matches);
   }
@@ -141,5 +145,114 @@ void main() {
     expect(client.matchCalls.length, 1);
     expect(client.commentCalls.length, 1);
     expect(c.items, hasLength(1));
+  });
+
+  group('danmaku host config', () {
+    const a = DanmakuHost(id: 'a', name: 'A', baseUrl: 'http://a', token: 't');
+    const b = DanmakuHost(id: 'b', name: 'B', baseUrl: 'http://b', token: 't');
+
+    test('requests go to the configured default host', () async {
+      final settings = SettingsStore(store: MemoryKeyValueStore());
+      await settings.setDanmakuHosts([a, b]);
+      await settings.setDanmakuDefaultHostId('b');
+      final client = _FakeClient();
+      final c = DanmakuController(client: client);
+      c.init(settings);
+
+      await c.autoLoad('三体', 0);
+
+      expect(c.activeHost?.id, 'b');
+      expect(client.matchHosts.single.id, 'b');
+    });
+
+    test('without an explicit default, the first host is used', () async {
+      final settings = SettingsStore(store: MemoryKeyValueStore());
+      await settings.setDanmakuHosts([a, b]);
+      final c = DanmakuController(client: _FakeClient());
+      c.init(settings);
+
+      expect(c.activeHost?.id, 'a');
+    });
+
+    test('a persisted default that no longer exists falls back to the first',
+        () async {
+      final settings = SettingsStore(store: MemoryKeyValueStore());
+      await settings.setDanmakuHosts([a, b]);
+      await settings.setDanmakuDefaultHostId('gone');
+      final c = DanmakuController(client: _FakeClient());
+      c.init(settings);
+
+      expect(c.activeHost?.id, 'a');
+    });
+
+    test('switching the default re-targets requests (cache is host-specific)',
+        () async {
+      final settings = SettingsStore(store: MemoryKeyValueStore());
+      await settings.setDanmakuHosts([a, b]);
+      final client = _FakeClient();
+      final c = DanmakuController(client: client);
+      c.init(settings);
+
+      await c.autoLoad('三体', 0);
+      expect(client.matchHosts.single.id, 'a');
+
+      await c.setDefaultHost('b');
+      await c.autoLoad('三体', 0);
+
+      expect(client.matchHosts.length, 2);
+      expect(client.matchHosts.last.id, 'b');
+    });
+
+    test('adding a source keeps the existing default', () async {
+      final settings = SettingsStore(store: MemoryKeyValueStore());
+      await settings.setDanmakuHosts([a]);
+      final c = DanmakuController(client: _FakeClient());
+      c.init(settings);
+
+      await c.addHost('B', 'http://b', 't');
+
+      expect(c.hosts, hasLength(2));
+      expect(c.activeHost?.id, 'a');
+    });
+
+    test('adding the first host makes it default; removal falls back',
+        () async {
+      final settings = SettingsStore(store: MemoryKeyValueStore());
+      final c = DanmakuController(client: _FakeClient());
+      c.init(settings);
+
+      expect(c.hosts, isEmpty);
+      expect(await c.addHost('', 'http://a', 't'), isNull);
+      expect(c.hosts, hasLength(1));
+      expect(c.activeHost?.baseUrl, 'http://a');
+
+      // Trailing slash + duplicate detection; bad scheme rejected.
+      expect(await c.addHost('dup', 'http://a/', 't'), '该弹幕源已存在');
+      expect(await c.addHost('bad', 'ftp://x', 't'), '地址需以 http 开头');
+      expect(await c.addHost('no-token', 'http://b', ''),
+          '请填写弹幕服务 Token');
+
+      expect(await c.addHost('B', 'http://b', 't'), isNull);
+      await c.setDefaultHost(c.hosts.last.id);
+      expect(c.activeHost?.baseUrl, 'http://b');
+
+      await c.removeHost(c.hosts.last.id);
+      expect(c.hosts, hasLength(1));
+      expect(c.activeHost?.baseUrl, 'http://a');
+      expect(settings.danmakuHosts.single.baseUrl, 'http://a');
+    });
+
+    test('deleting every host persists an empty list (no re-seeding)',
+        () async {
+      final settings = SettingsStore(store: MemoryKeyValueStore());
+      final c = DanmakuController(client: _FakeClient());
+      c.init(settings);
+      await c.addHost('A', 'http://a', 't');
+      await c.removeHost(c.hosts.single.id);
+
+      expect(c.hosts, isEmpty);
+      expect(c.activeHost, isNull);
+      expect(settings.danmakuHosts, isEmpty);
+    });
   });
 }
