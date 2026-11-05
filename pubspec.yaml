@@ -1,7 +1,7 @@
 name: bear_tv
 description: "熊熊TV (Bear TV) · Android TV player UI shell (Flutter). Focus/remote navigation + animated UI; data & player wired behind interfaces."
 publish_to: 'none'
-version: 0.1.0+1
+version: 0.3.0+3
 
 environment:
   sdk: '>=3.3.0 <4.0.0'
