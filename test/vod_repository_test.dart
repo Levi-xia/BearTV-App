@@ -95,4 +95,93 @@ void main() {
     final detail = await repo.resolveByTitle('三体', [_siteA]);
     expect(detail, isNull);
   });
+
+  test('the switch-resource pass reuses the resolve pass requests', () async {
+    final client = _FakeClient();
+    var searches = 0;
+    var details = 0;
+    client.searches['a'] = () async {
+      searches++;
+      return [_hit('a', '三体')];
+    };
+    client.details['a'] = (_) async {
+      details++;
+      return _detail('a');
+    };
+
+    final repo = VodRepository(client: client);
+    await repo.resolveByTitle('三体', [_siteA]);
+    expect(searches, 1);
+    expect(details, 1);
+
+    final opts = await repo.loadResourceOptions('三体', [_siteA]);
+
+    expect(opts, hasLength(1));
+    expect(opts.single.title, '三体');
+    expect(searches, 1, reason: 'the second pass must not search again');
+    expect(details, 1, reason: 'the detail was already probed by resolve');
+  });
+
+  test('concurrent lookups share one in-flight request', () async {
+    final client = _FakeClient();
+    var searches = 0;
+    client.searches['a'] = () async {
+      searches++;
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+      return [_hit('a', '三体')];
+    };
+
+    final repo = VodRepository(client: client);
+    await Future.wait([
+      repo.searchAll('三体', [_siteA]),
+      repo.searchAll('三体', [_siteA]),
+    ]);
+
+    expect(searches, 1);
+  });
+
+  test('the playing resource is listed first without searching its source',
+      () async {
+    final client = _FakeClient();
+    var searches = 0;
+    client.searches['a'] = () async {
+      searches++;
+      return const <SearchHit>[];
+    };
+    client.searches['b'] = () async {
+      searches++;
+      return [_hit('b', '三体', vodId: '9')];
+    };
+    client.details['b'] = (_) async => _detail('b');
+
+    final repo = VodRepository(client: client);
+    final opts = await repo.loadResourceOptions(
+      '三体',
+      [_siteA, _siteB],
+      current: _detail('a', title: '三体 (2023)'),
+    );
+
+    expect(opts, hasLength(2));
+    expect(opts.first.isCurrent, isTrue);
+    expect(opts.first.sourceId, 'a');
+    expect(opts.first.title, '三体 (2023)');
+    expect(searches, 1, reason: 'the current source needs no search');
+  });
+
+  test('a failed detail is not memoized, so a retry can succeed', () async {
+    final client = _FakeClient();
+    var details = 0;
+    client.searches['a'] = () async => [_hit('a', '三体')];
+    client.details['a'] = (_) async {
+      details++;
+      return details == 1 ? null : _detail('a');
+    };
+
+    final repo = VodRepository(client: client);
+    expect(await repo.resolveByTitle('三体', [_siteA]), isNull);
+    final again = await repo.detail(_siteA, '1');
+
+    expect(details, 2);
+    expect(again, isNotNull);
+  });
 }

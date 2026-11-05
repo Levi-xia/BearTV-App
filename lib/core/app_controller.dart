@@ -884,7 +884,7 @@ class AppController extends ChangeNotifier {
     final opts = await vodRepo.loadResourceOptions(
       item.title,
       selectedSites,
-      currentKey: currentDetail?.key,
+      current: currentDetail,
     );
     if (token != _playToken) return;
     resourceOptions = opts;

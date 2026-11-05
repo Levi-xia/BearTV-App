@@ -35,7 +35,7 @@ class FakeVod extends VodRepository {
   Future<List<ResourceOption>> loadResourceOptions(
     String title,
     List<CmsSite> sites, {
-    String? currentKey,
+    VodDetail? current,
   }) async =>
       const [];
 }
