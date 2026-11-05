@@ -43,22 +43,25 @@ class _IptvBrowserState extends State<IptvBrowser> {
   @override
   Widget build(BuildContext context) {
     final app = AppScope.of(context);
-    return Stack(
-      fit: StackFit.expand,
-      children: [
-        Padding(
-          // Clear the two-row header (logo row + nav tab strip), then let the
-          // player fill the rest — the small screen is a lean, big live preview
-          // with nothing else on it, so it takes as much room as possible.
-          // The box is 16:9 inside a 16:9 area, so its size is bounded by the
-          // *vertical* budget: every pixel shaved off top/bottom grows the
-          // width too. Top keeps a clear gap below the tab strip (146 sat
-          // right under it); bottom keeps just a thin TV-overscan margin.
-          padding: const EdgeInsets.fromLTRB(32, 166, 32, 14),
-          child: _LiveStage(playerFocus: _playerFocus),
-        ),
-        if (app.fullscreen) _LiveFullscreen(playerFocus: _playerFocus),
-      ],
+    // Exactly one video surface at a time. Fullscreen *replaces* the inline
+    // stage rather than stacking an opaque fullscreen layer over it: both
+    // contained a `_LiveVideoSurface`, so the old layout kept a second
+    // `VideoPlayer` widget bound to the same controller alive under an opaque
+    // black box — a second full-screen texture sample every frame (real GPU
+    // cost on these boxes), a second attach-nudge, and a second set of
+    // player/iptv listeners, all invisible. PlayScreen already swaps layers
+    // the same way (`if (app.fullscreen) return const _FullscreenPlayer();`).
+    if (app.fullscreen) return _LiveFullscreen(playerFocus: _playerFocus);
+    return Padding(
+      // Clear the two-row header (logo row + nav tab strip), then let the
+      // player fill the rest — the small screen is a lean, big live preview
+      // with nothing else on it, so it takes as much room as possible.
+      // The box is 16:9 inside a 16:9 area, so its size is bounded by the
+      // *vertical* budget: every pixel shaved off top/bottom grows the
+      // width too. Top keeps a clear gap below the tab strip (146 sat
+      // right under it); bottom keeps just a thin TV-overscan margin.
+      padding: const EdgeInsets.fromLTRB(32, 166, 32, 14),
+      child: _LiveStage(playerFocus: _playerFocus),
     );
   }
 }
@@ -895,9 +898,9 @@ class _ChannelRow extends StatelessWidget {
 class _LiveFullscreen extends StatefulWidget {
   const _LiveFullscreen({required this.playerFocus});
 
-  /// The inline player's focus node. The inline layer stays mounted underneath
-  /// this overlay, so we restore focus to it on exit (and must steal focus from
-  /// it on entry — see [_rootFocus]).
+  /// The inline player's focus node. The inline stage is unmounted while this
+  /// layer is up (one video surface only), so focus is handed back to it on
+  /// exit — after the stage remounts — and stolen from it on entry.
   final FocusNode playerFocus;
 
   @override
@@ -910,10 +913,10 @@ class _LiveFullscreenState extends State<_LiveFullscreen> {
   Timer? _osdTimer;
   late final bool Function() _backIntercept;
 
-  // Our own key handler's focus node. `autofocus` alone can't claim focus here
-  // because the inline player's node (a sibling FocusScope descendant that
-  // stays mounted below us) already holds it — so we explicitly steal focus on
-  // mount and hand it back on unmount.
+  // Our own key handler's focus node. `autofocus` alone can't claim focus here:
+  // the inline player's node held primary focus up to the frame that swapped
+  // trees, and focus is cleared when that node is detached — so we explicitly
+  // take it on mount and hand it back on unmount.
   final FocusNode _rootFocus = FocusNode(debugLabel: 'iptvFullscreenRoot');
 
   /// Captured on mount so [dispose] can unregister without an inherited-widget

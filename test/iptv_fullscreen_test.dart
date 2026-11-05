@@ -79,4 +79,31 @@ void main() {
 
     expect(find.text('未选择频道'), findsOneWidget);
   });
+
+  /// Fullscreen used to be layered *over* the inline stage, and both rendered
+  /// a `_LiveVideoSurface` — so two `VideoPlayer` widgets stayed bound to the
+  /// same controller, one invisibly composited under an opaque box every frame.
+  /// The layers must now be mutually exclusive.
+  testWidgets('fullscreen replaces the inline stage: one video surface only',
+      (tester) async {
+    final app = AppController(player: MockPlayerController());
+    addTearDown(app.dispose);
+
+    await tester.pumpWidget(_host(app));
+    await tester.pump();
+    expect(find.text('选择频道开始播放'), findsOneWidget);
+    expect(find.text('OK 全屏'), findsOneWidget); // inline hint
+
+    app.setFullscreen(true);
+    await tester.pump();
+    expect(find.text('选择频道开始播放'), findsOneWidget,
+        reason: 'no hidden second surface under the fullscreen layer');
+    expect(find.text('OK 全屏'), findsNothing,
+        reason: 'the inline stage must be unmounted');
+
+    app.setFullscreen(false);
+    await tester.pump();
+    expect(find.text('选择频道开始播放'), findsOneWidget);
+    expect(find.text('OK 全屏'), findsOneWidget);
+  });
 }
