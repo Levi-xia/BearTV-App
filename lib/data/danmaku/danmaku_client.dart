@@ -14,51 +14,166 @@ import 'danmaku_models.dart';
 /// - comment: `GET  {base}/{token}/api/v2/comment/{episodeId}?format=xml`
 ///            → bilibili-style XML `<d p="time,mode,size,color,...">text</d>`
 ///
-/// Every call is best-effort: a failure degrades to an empty result and never
-/// interrupts playback.
+/// A danmaku HTTP call failed — as opposed to succeeding with "no match" / "no
+/// comments", which are legitimate empty results. Callers use this to avoid
+/// caching failures and to show the user what actually went wrong.
+class DanmakuRequestException implements Exception {
+  DanmakuRequestException(
+    this.message, {
+    this.statusCode,
+    this.transient = false,
+  });
+
+  /// Human-readable, Chinese, e.g. `匹配弹幕超时（30 秒）`.
+  final String message;
+  final int? statusCode;
+
+  /// True for timeouts / connection errors / 5xx, which are worth one retry.
+  final bool transient;
+
+  @override
+  String toString() => message;
+}
+
+/// Outcome of a `/match` call. [exact] mirrors the server's `isMatched`: when
+/// false, [matches] are low-confidence guesses that may belong to another show.
+class DanmakuMatchResult {
+  const DanmakuMatchResult({required this.exact, required this.matches});
+
+  final bool exact;
+  final List<DanmakuMatch> matches;
+
+  static const empty = DanmakuMatchResult(exact: false, matches: []);
+}
+
+/// Failures throw [DanmakuRequestException]; a successful call that simply has
+/// no match / no comments returns an empty result.
 class DanmakuClient {
-  DanmakuClient({http.Client? client, Duration? timeout})
-      : _client = client ?? http.Client(),
-        _timeout = timeout ?? const Duration(seconds: 8);
+  DanmakuClient({
+    http.Client? client,
+    Duration? timeout,
+    Duration? matchTimeout,
+    Duration? commentTimeout,
+  })  : _client = client ?? http.Client(),
+        _matchTimeout = timeout ?? matchTimeout ?? const Duration(seconds: 30),
+        _commentTimeout =
+            timeout ?? commentTimeout ?? const Duration(seconds: 30);
 
   final http.Client _client;
-  final Duration _timeout;
+
+  /// Both calls run in the background and never block playback, so a long
+  /// budget beats giving up on a slow/relayed host.
+  final Duration _matchTimeout;
+
+  /// The comment body is a whole episode's XML (can be several MB on a slow
+  /// host), so it gets its own knob even though it defaults to the same 30s.
+  final Duration _commentTimeout;
+
+  static const Duration _retryBackoff = Duration(milliseconds: 300);
 
   void close() => _client.close();
 
-  /// Match [fileName] to candidate episodes on [host]. [] on any failure.
-  Future<List<DanmakuMatch>> match(DanmakuHost host, String fileName) async {
+  /// Match [fileName] to candidate episodes on [host]. Throws
+  /// [DanmakuRequestException] on transport failure; [] when genuinely unmatched.
+  Future<DanmakuMatchResult> match(DanmakuHost host, String fileName) async {
+    final res = await _request(
+      '匹配弹幕',
+      () => _client.post(
+        Uri.parse(host.matchUrl),
+        headers: const {'Content-Type': 'application/json'},
+        body: jsonEncode({'fileName': fileName}),
+      ),
+      _matchTimeout,
+    );
+    Object? decoded;
     try {
-      final res = await _client
-          .post(
-            Uri.parse(host.matchUrl),
-            headers: const {'Content-Type': 'application/json'},
-            body: jsonEncode({'fileName': fileName}),
-          )
-          .timeout(_timeout);
-      if (res.statusCode < 200 || res.statusCode >= 300) return const [];
-      final decoded = jsonDecode(utf8.decode(res.bodyBytes));
-      if (decoded is! Map) return const [];
-      if (decoded['success'] != true) return const [];
-      final matches = decoded['matches'];
-      if (matches is! List) return const [];
-      return parseMatches(matches);
+      decoded = jsonDecode(utf8.decode(res.bodyBytes));
     } catch (_) {
-      return const [];
+      throw DanmakuRequestException('匹配弹幕返回了无法解析的响应');
+    }
+    if (decoded is! Map) {
+      throw DanmakuRequestException('匹配弹幕返回了无法解析的响应');
+    }
+    // success:false is the server rejecting the request (bad token, upstream
+    // error). Surface its message instead of pretending nothing matched.
+    if (decoded['success'] != true) {
+      final msg = (decoded['errorMessage'] as String?)?.trim() ?? '';
+      throw DanmakuRequestException(
+        '匹配弹幕失败：${msg.isEmpty ? '服务器拒绝请求' : msg}',
+        statusCode: res.statusCode,
+      );
+    }
+    final matches = decoded['matches'];
+    if (matches is! List) return DanmakuMatchResult.empty;
+    return DanmakuMatchResult(
+      exact: decoded['isMatched'] == true,
+      matches: parseMatches(matches),
+    );
+  }
+
+  /// Fetch + parse all comments for [episodeId] on [host]. Throws
+  /// [DanmakuRequestException] on transport failure; [] when the episode has none.
+  Future<List<DanmakuItem>> fetchComments(
+      DanmakuHost host, int episodeId) async {
+    final res = await _request(
+      '获取弹幕',
+      () => _client.get(Uri.parse(host.commentUrl(episodeId))),
+      _commentTimeout,
+    );
+    try {
+      return parseDanmakuXml(utf8.decode(res.bodyBytes));
+    } catch (_) {
+      throw DanmakuRequestException('获取弹幕返回了无法解析的响应');
     }
   }
 
-  /// Fetch + parse all comments for [episodeId] on [host]. [] on any failure.
-  Future<List<DanmakuItem>> fetchComments(
-      DanmakuHost host, int episodeId) async {
-    try {
-      final res =
-          await _client.get(Uri.parse(host.commentUrl(episodeId))).timeout(_timeout);
-      if (res.statusCode < 200 || res.statusCode >= 300) return const [];
-      return parseDanmakuXml(utf8.decode(res.bodyBytes));
-    } catch (_) {
-      return const [];
+  /// Run [send] with [timeout]; retry once with a short backoff on transient
+  /// failures (timeout, connection error, 5xx/408/429). Throws
+  /// [DanmakuRequestException] — never swallows the reason.
+  Future<http.Response> _request(
+    String label,
+    Future<http.Response> Function() send,
+    Duration timeout,
+  ) async {
+    DanmakuRequestException? failure;
+    for (var attempt = 0; attempt < 2; attempt++) {
+      if (attempt > 0) await Future<void>.delayed(_retryBackoff);
+      try {
+        final res = await send().timeout(timeout);
+        if (res.statusCode >= 200 && res.statusCode < 300) return res;
+        final transient = res.statusCode == 408 ||
+            res.statusCode == 429 ||
+            res.statusCode >= 500;
+        failure = DanmakuRequestException(
+          '$label失败（HTTP ${res.statusCode}）',
+          statusCode: res.statusCode,
+          transient: transient,
+        );
+        if (!transient) break; // a 4xx won't fix itself
+      } on TimeoutException {
+        failure = DanmakuRequestException(
+          '$label超时（${timeout.inSeconds} 秒）',
+          transient: true,
+        );
+      } catch (e) {
+        failure = DanmakuRequestException(
+          '$label网络错误（${_brief(e)}）',
+          transient: true,
+        );
+      }
     }
+    throw failure ?? DanmakuRequestException('$label失败');
+  }
+
+  /// Collapse `ClientException with SocketException: Failed host lookup: ...`
+  /// into something that fits a one-line status.
+  static String _brief(Object e) {
+    var s = e.toString().replaceAll(RegExp(r'\s+'), ' ').trim();
+    final host = RegExp(r'(?:host lookup|Failed host lookup)[: ]*(.+)$')
+        .firstMatch(s);
+    if (host != null) s = '无法解析域名 ${host.group(1)}';
+    if (s.length > 60) s = '${s.substring(0, 60)}…';
+    return s;
   }
 }
 

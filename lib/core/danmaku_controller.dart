@@ -64,8 +64,16 @@ class DanmakuController extends ChangeNotifier {
   }
 
   /// Auto-match + load for a title/episode. No-op when danmaku is disabled.
-  /// Silent on failure (a toast/status is enough — never blocks playback).
-  Future<void> autoLoad(String title, int episodeIndex) async {
+  ///
+  /// [title] is the TMDB display title; [detailTitle] is the CMS source's own
+  /// title (usually closer to the release name the danmaku server indexes), and
+  /// is tried first. Never blocks playback, but a failure is *reported* —
+  /// transport errors must not be mistaken for "this show has no danmaku".
+  Future<void> autoLoad(
+    String title,
+    int episodeIndex, {
+    String? detailTitle,
+  }) async {
     if (!_config.enabled) return;
     if (!_hasHost) {
       statusText = '未配置弹幕服务';
@@ -73,18 +81,27 @@ class DanmakuController extends ChangeNotifier {
       notifyListeners();
       return;
     }
-    final name = formatDanmakuSearchName(title, episodeIndex);
-    lastSearchName = name;
-    final token = ++_loadToken;
-
-    final cached = _cache[_titleKey(name)];
-    if (cached != null) {
-      matches = const [];
-      loading = false;
-      statusText = cached.isEmpty ? '未找到弹幕' : '已加载 ${cached.length} 条弹幕';
-      _replaceItems(cached);
+    final names = _searchNames(title, episodeIndex, detailTitle);
+    if (names.isEmpty) {
+      statusText = '弹幕搜索标题为空';
+      _replaceItems(const []);
       notifyListeners();
       return;
+    }
+    lastSearchName = names.first;
+    final token = ++_loadToken;
+
+    for (final name in names) {
+      final cached = _cache[_titleKey(name)];
+      if (cached != null) {
+        _touch(_titleKey(name));
+        matches = const [];
+        loading = false;
+        statusText = cached.isEmpty ? '未找到弹幕' : '已加载 ${cached.length} 条弹幕';
+        _replaceItems(cached);
+        notifyListeners();
+        return;
+      }
     }
 
     loading = true;
@@ -93,33 +110,76 @@ class DanmakuController extends ChangeNotifier {
     _replaceItems(const []);
     notifyListeners();
 
-    final ms = await _client.match(_host, name);
-    if (token != _loadToken) return;
-    // Fallback: the `S01Exx` suffix can miss when the server only indexes the
-    // bare title (e.g. movies / single-season shows). Retry with just the
-    // cleaned title before giving up.
-    var matched = ms;
-    if (matched.isEmpty) {
-      final bare = cleanDanmakuTitle(title);
-      if (bare.isNotEmpty && bare != name) {
-        matched = await _client.match(_host, bare);
+    DanmakuRequestException? failure;
+    var answered = false; // at least one query got a real (possibly empty) answer
+    List<DanmakuMatch> matched = const [];
+    List<DanmakuMatch> fuzzy = const [];
+    String? fuzzyName;
+    String? usedName;
+    // A dead host would otherwise spend one full (30s timeout + retry) budget
+    // per candidate spelling; stop trying new spellings after this. 60s still
+    // leaves room for a slow-but-working host to answer two spellings.
+    final deadline = DateTime.now().add(const Duration(seconds: 60));
+    for (final name in names) {
+      if (DateTime.now().isAfter(deadline)) break;
+      try {
+        final result = await _client.match(_host, name);
         if (token != _loadToken) return;
+        answered = true;
+        if (result.matches.isEmpty) continue;
+        if (result.exact) {
+          matched = result.matches;
+          usedName = name;
+          break; // a confident hit beats trying further spellings
+        }
+        // Keep the first fuzzy hit but keep looking for an exact one.
+        if (fuzzy.isEmpty) {
+          fuzzy = result.matches;
+          fuzzyName = name;
+        }
+      } on DanmakuRequestException catch (e) {
+        if (token != _loadToken) return;
+        failure = e;
       }
     }
+    final matchedExactly = matched.isNotEmpty;
+    if (matched.isEmpty && fuzzy.isNotEmpty) {
+      matched = fuzzy;
+      usedName = fuzzyName;
+    }
+
     if (matched.isEmpty) {
       loading = false;
-      statusText = '未找到弹幕';
+      statusText = answered ? '未找到弹幕' : '匹配弹幕失败：${failure?.message ?? '未知错误'}';
       notifyListeners();
       return;
     }
+
     matches = matched;
-    final fetched = await _client.fetchComments(_host, matched.first.episodeId);
+    loading = true;
+    statusText = '加载弹幕中…';
+    notifyListeners();
+
+    final List<DanmakuItem> fetched;
+    try {
+      fetched = await _client.fetchComments(_host, matched.first.episodeId);
+    } on DanmakuRequestException catch (e) {
+      if (token != _loadToken) return;
+      // Do NOT cache: a transient failure must not look like "no danmaku".
+      loading = false;
+      statusText = '获取弹幕失败：${e.message}';
+      notifyListeners();
+      return;
+    }
     if (token != _loadToken) return;
     final sampled = _sample(fetched);
-    _cache[_titleKey(name)] = sampled;
+    final key = _titleKey(usedName ?? names.first);
+    _cache[key] = sampled;
     _trim();
     loading = false;
-    statusText = sampled.isEmpty ? '未找到弹幕' : '已加载 ${sampled.length} 条弹幕';
+    statusText = sampled.isEmpty
+        ? '该集暂无弹幕'
+        : '已加载 ${sampled.length} 条弹幕${matchedExactly ? '' : '（模糊匹配，可在手动匹配中更换）'}';
     _replaceItems(sampled);
     notifyListeners();
   }
@@ -140,7 +200,16 @@ class DanmakuController extends ChangeNotifier {
     statusText = '搜索中…';
     matches = const [];
     notifyListeners();
-    final ms = await _client.match(_host, name);
+    List<DanmakuMatch> ms;
+    try {
+      ms = (await _client.match(_host, name)).matches;
+    } on DanmakuRequestException catch (e) {
+      if (token != _loadToken) return;
+      loading = false;
+      statusText = '搜索失败：${e.message}';
+      notifyListeners();
+      return;
+    }
     if (token != _loadToken) return;
     loading = false;
     matches = ms;
@@ -155,11 +224,23 @@ class DanmakuController extends ChangeNotifier {
     statusText = '加载弹幕中…';
     notifyListeners();
     final key = _epKey(m.episodeId);
-    var items = _cache[key];
-    if (items == null) {
-      final fetched = await _client.fetchComments(_host, m.episodeId);
-      if (token != _loadToken) return;
-      items = _sample(fetched);
+    final cached = _cache[key];
+    List<DanmakuItem> items;
+    if (cached != null) {
+      _touch(key);
+      items = cached;
+    } else {
+      try {
+        final fetched = await _client.fetchComments(_host, m.episodeId);
+        if (token != _loadToken) return;
+        items = _sample(fetched);
+      } on DanmakuRequestException catch (e) {
+        if (token != _loadToken) return;
+        loading = false;
+        statusText = '获取弹幕失败：${e.message}';
+        notifyListeners();
+        return;
+      }
       _cache[key] = items;
       _trim();
     }
@@ -196,6 +277,36 @@ class DanmakuController extends ChangeNotifier {
   Future<void> setArea(double v) => _save(_config.copyWith(area: v));
 
   // --- Internals ------------------------------------------------------------
+
+  /// Candidate `/match` file names, most specific first: the CMS detail title
+  /// (usually the release name) then the TMDB title, each as `S01E{nn}`, then
+  /// the same titles bare for servers that only index movies / season packs.
+  /// Deduplicated, order preserved.
+  List<String> _searchNames(String title, int episodeIndex, String? detailTitle) {
+    final titles = <String>[
+      if (detailTitle != null && detailTitle.trim().isNotEmpty) detailTitle.trim(),
+      title,
+    ];
+    final out = <String>[];
+    void add(String v) {
+      final s = v.trim();
+      if (s.isNotEmpty && !out.contains(s)) out.add(s);
+    }
+
+    for (final t in titles) {
+      add(formatDanmakuSearchName(t, episodeIndex));
+    }
+    for (final t in titles) {
+      add(cleanDanmakuTitle(t));
+    }
+    return out;
+  }
+
+  /// Mark [key] as most-recently-used (LinkedHashMap move-to-end).
+  void _touch(String key) {
+    final v = _cache.remove(key);
+    if (v != null) _cache[key] = v;
+  }
 
   /// Uniformly thin a very large (already time-sorted) list down to roughly
   /// [_sampleThreshold] items, preserving order and even time distribution.

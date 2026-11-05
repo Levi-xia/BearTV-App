@@ -1425,7 +1425,8 @@ Future<void> _manualMatchDanmaku(BuildContext context, AppController app) async 
   if (!context.mounted) return;
   final matches = app.danmaku.matches;
   if (matches.isEmpty) {
-    app.showToast('未找到匹配的弹幕');
+    // statusText carries the real reason (timeout / HTTP error / no match).
+    app.showToast(app.danmaku.statusText ?? '未找到匹配的弹幕');
     return;
   }
   await showDialog<void>(

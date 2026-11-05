@@ -22,16 +22,14 @@ void main() {
     'maxWidth': 1920,
     'maxHeight': 1080,
     'player': {
-      // Rebuffer only when the queue drops below 3s; keep filling up to 90s
-      // ahead. A larger max rides out longer network dips without a visible
-      // stall. Note max only reads further ahead in the background — it does
-      // NOT delay start (playback begins once min is buffered), so keeping min
-      // at 3s preserves snappy startup / live channel zapping.
-      'buffer': '3000+90000',
-      // Media unloads after this long without data. The default is 10s, which
-      // is short for slow CMS origins answering the first range request; 20s
-      // avoids a premature "unload" without hanging forever on a dead source.
-      'timeout': '20000',
+      // Start once 1s is queued (not 3s — the extra wait made startup feel
+      // slower than the web player, where playback begins on the first
+      // fragment), then fill up to 90s ahead. Max only reads further ahead in
+      // the background and does NOT delay start.
+      'buffer': '1000+90000',
+      // Network/unload timeout. The default is 10s; 20s made a dead or slow
+      // origin hang the play page for that long before surfacing an error.
+      'timeout': '10000',
       // Cache demuxed http(s) byte ranges so a re-watch / small seek doesn't
       // re-download. 32 ranges is cheap in RAM (a 6 GB device) and covers more
       // seek-back positions than the default 16.
@@ -45,10 +43,13 @@ void main() {
       'avio.reconnect_streamed': '1',
       'avio.reconnect_on_network_error': '1',
       'avio.reconnect_delay_max': '5',
-      'avio.reconnect_delay_total_max': '60',
-      // Abort a hung read after 15s (FFmpeg uses microseconds) instead of
+      // Cap the whole retry window: 60s meant a source that was actually dead
+      // kept the player "connecting" for a minute. 20s still rides out a real
+      // hiccup, then fails fast so the user can pick another resource.
+      'avio.reconnect_delay_total_max': '20',
+      // Abort a hung read after 8s (FFmpeg uses microseconds) instead of
       // blocking the demuxer until the player's overall timeout.
-      'avio.rw_timeout': '15000000',
+      'avio.rw_timeout': '8000000',
     },
   });
   // Target: low-end Android TV boxes (Android < 10, ~2 GB RAM). Keep the

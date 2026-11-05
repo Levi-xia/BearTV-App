@@ -718,7 +718,7 @@ class AppController extends ChangeNotifier {
     // The record is only rewritten once the stream is ready (see [_onTick]) or
     // on a guarded exit (see [_handleBack]).
     await _playCurrent(resumeMs: resumeMs);
-    _loadResourceOptions(); // background: build the switch-resource list
+    _scheduleResourceOptions(); // background: build the switch-resource list
   }
 
   /// Build a synthetic [VodItem] for a CMS-direct [SearchHit] so it flows
@@ -803,7 +803,7 @@ class AppController extends ChangeNotifier {
 
     // No history write while only opening the page — see [openTitle].
     await _playCurrent(resumeMs: resumeMs);
-    _loadResourceOptions();
+    _scheduleResourceOptions();
   }
 
   /// Open the current (lineIndex/episodeIndex) episode in the player.
@@ -816,6 +816,10 @@ class AppController extends ChangeNotifier {
     _playStarted = false;
     _lastSaveMs = _nowMs();
     final ep = _episodeAt(lineIndex, episodeIndex);
+    // Kick danmaku off first: it's an independent HTTP pipeline and must not
+    // queue behind the video open/seek/play calls (it used to start only after
+    // `play()`, which put the match round-trips behind the stream startup).
+    _loadDanmakuForCurrentEpisode();
     await player.open(ep?.url);
     if (resumeMs > 0) await player.seekTo(Duration(milliseconds: resumeMs));
     // Arm progress saving only once the reported position means something.
@@ -825,10 +829,50 @@ class AppController extends ChangeNotifier {
     }
     await player.setSpeed(speed);
     await player.play();
-    // Best-effort danmaku match for this episode (never blocks playback).
-    final item = currentItem;
-    if (item != null) danmaku.autoLoad(item.title, episodeIndex);
   }
+
+  /// Best-effort danmaku match for the current episode (never blocks playback,
+  /// and never touches the network when danmaku is disabled).
+  void _loadDanmakuForCurrentEpisode() {
+    final item = currentItem;
+    if (item == null) return;
+    // The CMS detail title is usually closer to the release name the danmaku
+    // server indexes than the TMDB title; [autoLoad] falls back to [item.title].
+    unawaited(danmaku.autoLoad(
+      item.title,
+      episodeIndex,
+      detailTitle: currentDetail?.title,
+    ));
+  }
+
+  /// Build the cross-source "switch resource" candidates for the current title.
+  ///
+  /// Deferred a few seconds after start: it runs one search + detail request per
+  /// source, and firing that concurrently with the first video segments makes
+  /// start-up noticeably slower on a weak network. A newer open supersedes it.
+  void _scheduleResourceOptions() {
+    _resourceOptionsTimer?.cancel();
+    final token = ++_resourceOptionsToken;
+    final playToken = _playToken;
+    // Show the "正在查找其他资源…" placeholder right away; only the network
+    // work is deferred.
+    if (currentItem != null) {
+      loadingResources = true;
+      notifyListeners();
+    }
+    _resourceOptionsTimer = Timer(const Duration(milliseconds: 2500), () {
+      if (token != _resourceOptionsToken || playToken != _playToken) return;
+      if (page != AppPage.play) {
+        loadingResources = false;
+        notifyListeners();
+        return;
+      }
+      _loadResourceOptions();
+    });
+  }
+
+  Timer? _resourceOptionsTimer;
+  int _resourceOptionsToken = 0;
 
   /// Load the cross-source "switch resource" candidates for the current title.
   Future<void> _loadResourceOptions() async {
@@ -912,7 +956,7 @@ class AppController extends ChangeNotifier {
     notifyListeners();
     _persistHistory(positionMs: resumeMs > 5000 ? resumeMs : 0);
     await _playCurrent(resumeMs: resumeMs > 5000 ? resumeMs : 0);
-    _loadResourceOptions();
+    _scheduleResourceOptions();
   }
 
   Future<void> setSpeed(double v) async {
@@ -947,7 +991,7 @@ class AppController extends ChangeNotifier {
     await danmaku.setEnabled(v);
     final item = currentItem;
     if (v && page == AppPage.play && item != null && danmaku.items.isEmpty) {
-      danmaku.autoLoad(item.title, episodeIndex);
+      _loadDanmakuForCurrentEpisode();
     }
     showToast(v ? '已开启弹幕' : '已关闭弹幕');
   }
@@ -1283,6 +1327,7 @@ class AppController extends ChangeNotifier {
   @override
   void dispose() {
     _channelPreview?.cancel();
+    _resourceOptionsTimer?.cancel();
     for (final f in _feeds.values) {
       f.dispose();
     }
