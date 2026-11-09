@@ -777,15 +777,18 @@ class _UpdaterSectionState extends State<_UpdaterSection> {
         status = Text('更新包已下载（${_fmtSize(c.apkSize)}）', style: _info);
         actions = [
           _primary('安装更新', c.install, primary: true),
-          const SizedBox(width: 10),
+          const SizedBox(width: 12),
           _primary('重新下载', c.download),
         ];
         break;
     }
+    // Buttons share one Row: two actions sit side by side with proper gaps,
+    // and a single action keeps the same slot (Row's first child) so the
+    // D-pad focus survives re-renders.
     return [
       status,
       const SizedBox(height: 14),
-      ...actions,
+      Row(children: actions),
     ];
   }
 
