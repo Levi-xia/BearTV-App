@@ -61,6 +61,12 @@
 - 标量配置（Key、开关、自定义源、弹幕配置）使用 `shared_preferences`。
 - 续播记录使用 Hive（`playback` box），每个条目一条 JSON 字符串。
 
+### 版本更新
+
+- 设置页「版本更新」显示当前版本与设备架构，检查仓库 `main` 分支 `pubspec.yaml` 声明的版本（`Levi-xia/BearTV-App`），不走 GitHub API、不受限流影响。
+- 发现新版本时按当前设备 ABI（`arm64-v8a` / `armeabi-v7a` / `x86_64`）从 `v<版本>` 标签的 release 下载对应的 `--split-per-abi` 安装包，带进度显示；版本刚提交但 release 尚未发布时会提示稍后再试。
+- 下载完成后交由系统安装器安装（FileProvider 分享 APK，用户确认后完成更新），无需额外权限。
+
 ## 技术方案
 
 - **状态**：`AppScope`（`InheritedNotifier<AppController>`）+ `AppController`（`ChangeNotifier`），不引入第三方状态库。

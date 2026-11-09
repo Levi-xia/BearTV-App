@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Paths the updater may share with the system package installer via
+     FileProvider. APKs land in <external>/Android/data/<pkg>/files/updates
+     (or the internal files dir when external storage is unavailable). -->
+<paths>
+    <external-files-path name="updates" path="updates/" />
+    <files-path name="updates_internal" path="updates/" />
+</paths>

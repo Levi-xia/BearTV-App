@@ -3,6 +3,7 @@ import 'package:flutter/widgets.dart';
 
 import '../core/app_scope.dart';
 import '../core/theme.dart';
+import '../core/update_controller.dart';
 import '../data/config_import.dart';
 import '../data/danmaku/danmaku_models.dart';
 import '../data/vod/cms_models.dart';
@@ -317,6 +318,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
                                 subtitle:
                                     '开启后使用设备自带输入法：搜索页为原生输入框，选中后按「确定」呼出系统键盘（可用你熟悉的中文输入）。关闭则使用内置离线拼音键盘。',
                                 child: const _SearchImeSection(),
+                              ),
+                              const SizedBox(height: 22),
+                              _sectionCard(
+                                title: '版本更新',
+                                subtitle:
+                                    '检查仓库 main 分支 pubspec.yaml 声明的版本；发现新版本时按当前设备架构下载对应 APK，下载完成后交给系统安装器完成更新。',
+                                child: const _UpdaterSection(),
                               ),
                               const SizedBox(height: 22),
                               _advancedPanel(),
@@ -634,6 +642,191 @@ class _SearchImeSection extends StatelessWidget {
               fontFamilyFallback: kFontFallback),
         ),
       ],
+    );
+  }
+}
+
+/// In-app updater: shows the installed version, checks GitHub for a newer
+/// release, downloads the APK matching this device's ABI, and hands it to the
+/// system installer. Owns a private [UpdateController] — nothing here touches
+/// app-wide state.
+class _UpdaterSection extends StatefulWidget {
+  const _UpdaterSection();
+
+  @override
+  State<_UpdaterSection> createState() => _UpdaterSectionState();
+}
+
+class _UpdaterSectionState extends State<_UpdaterSection> {
+  late final UpdateController _c = UpdateController();
+
+  @override
+  void initState() {
+    super.initState();
+    _c.addListener(_onChanged);
+    _c.check();
+  }
+
+  void _onChanged() {
+    if (mounted) setState(() {});
+  }
+
+  @override
+  void dispose() {
+    _c.removeListener(_onChanged);
+    _c.dispose();
+    super.dispose();
+  }
+
+  static String _fmtSize(int bytes) =>
+      '${(bytes / 1024 / 1024).toStringAsFixed(1)} MB';
+
+  static const _dim = TextStyle(
+      fontSize: 15, color: AppColors.textDim, fontFamilyFallback: kFontFallback);
+  static const _info = TextStyle(
+      fontSize: 16, color: AppColors.text, fontFamilyFallback: kFontFallback);
+
+  @override
+  Widget build(BuildContext context) {
+    final c = _c;
+    final app = c.appInfo;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            const _SubLabel('当前版本'),
+            const SizedBox(width: 14),
+            Text(
+              app == null
+                  ? '读取中…'
+                  : 'v${app.versionName} · Build ${app.versionCode}',
+              style: _info,
+            ),
+          ],
+        ),
+        if (app != null && app.supportedAbis.isNotEmpty) ...[
+          const SizedBox(height: 6),
+          Text('设备架构：${app.supportedAbis.join(' / ')}', style: _dim),
+        ],
+        const SizedBox(height: 18),
+        ..._statusRows(c),
+      ],
+    );
+  }
+
+  /// Status line + action row, one slot per state.
+  ///
+  /// The action button keeps the same child position across every state, so
+  /// re-rendering never unmounts the focused control: pressing 重新检查 /
+  /// 下载更新 / 安装更新 leaves the D-pad focus on that button (shown as
+  /// 检查中… / 下载中… meanwhile) instead of falling back to the page's first
+  /// focusable. _Btn is stateless w.r.t. focus — the FocusNode rides on the
+  /// reused Element.
+  List<Widget> _statusRows(UpdateController c) {
+    final Widget status;
+    final List<Widget> actions;
+    switch (c.state) {
+      case UpdateState.idle:
+        status = const Text('尚未检查', style: _dim);
+        actions = [_primary('检查更新', c.check, primary: true)];
+        break;
+      case UpdateState.checking:
+        status = const Text('正在检查更新…', style: _dim);
+        // Same slot as the button that started the check — keeps its focus.
+        actions = [_primary('检查中…', c.check)];
+        break;
+      case UpdateState.upToDate:
+        status =
+            Text('已是最新版本 v${c.appInfo?.versionName ?? ''} ✓', style: _info);
+        actions = [_primary('重新检查', c.check)];
+        break;
+      case UpdateState.failed:
+        status = Text(c.error ?? '操作失败，请重试', style: _errorStyle);
+        actions = [_primary('重试', c.retry)];
+        break;
+      case UpdateState.available:
+        final r = c.release!;
+        final abi = c.abi;
+        if (abi == null) {
+          status = const Text('该版本没有提供此设备架构可用的安装包', style: _dim);
+          actions = const [];
+        } else {
+          status = Text('发现新版本 v${r.baseVersion}', style: _info);
+          actions = [_primary('下载更新（$abi）', c.download, primary: true)];
+        }
+        break;
+      case UpdateState.downloading:
+        status = Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            _ProgressBar(value: c.progress),
+            const SizedBox(height: 8),
+            Text(
+              c.progress <= 0
+                  ? '正在连接…'
+                  : '下载中 ${(c.progress * 100).round()}%',
+              style: _dim,
+            ),
+          ],
+        );
+        actions = [_primary('下载中…', () {})];
+        break;
+      case UpdateState.downloaded:
+        status = Text('更新包已下载（${_fmtSize(c.apkSize)}）', style: _info);
+        actions = [
+          _primary('安装更新', c.install, primary: true),
+          const SizedBox(width: 10),
+          _primary('重新下载', c.download),
+        ];
+        break;
+    }
+    return [
+      status,
+      const SizedBox(height: 14),
+      ...actions,
+    ];
+  }
+
+  /// A section action button; [primary] styles it as the main action.
+  static Widget _primary(String label, VoidCallback onPressed,
+          {bool primary = false}) =>
+      _Btn(label: label, primary: primary, onPressed: onPressed);
+
+  static const _errorStyle = TextStyle(
+      fontSize: 15,
+      color: Color(0xFFFF8A80),
+      fontFamilyFallback: kFontFallback);
+}
+
+/// Thin progress track; a value <= 0 means "starting" (content length unknown
+/// yet), rendered as a small accent nub so the row still reads as in progress.
+class _ProgressBar extends StatelessWidget {
+  const _ProgressBar({required this.value});
+  final double value;
+
+  @override
+  Widget build(BuildContext context) {
+    final v = value.clamp(0.0, 1.0);
+    return Container(
+      height: 10,
+      decoration: BoxDecoration(
+        color: const Color(0x14FFFFFF),
+        borderRadius: BorderRadius.circular(5),
+      ),
+      child: Align(
+        alignment: Alignment.centerLeft,
+        child: FractionallySizedBox(
+          widthFactor: v <= 0 ? 0.08 : v,
+          child: Container(
+            decoration: const BoxDecoration(
+              color: AppColors.accent,
+              borderRadius: BorderRadius.horizontal(right: Radius.circular(5)),
+            ),
+          ),
+        ),
+      ),
     );
   }
 }

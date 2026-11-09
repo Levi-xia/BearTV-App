@@ -11,7 +11,9 @@ import 'fakes.dart';
 
 Future<void> _settle(WidgetTester tester) async {
   // MockPlayerController runs a periodic timer, so pumpAndSettle would hang.
-  for (var i = 0; i < 6; i++) {
+  // 40 × 120 ms = 4.8 s of fake time — past the 3.3 s splash hold + 650 ms
+  // exit fade — so the home shell is actually mounted when tests assert on it.
+  for (var i = 0; i < 40; i++) {
     await tester.pump(const Duration(milliseconds: 120));
   }
 }
