@@ -64,12 +64,33 @@ void main() {
       expect(info.tagName, 'v0.1.4');
     });
 
-    test('fetchLatest throws on non-200', () async {
-      for (final code in [404, 500]) {
-        final c = GitHubReleaseChecker(
-            client: MockClient((_) async => http.Response('', code)));
-        await expectLater(c.fetchLatest(), throwsA(isA<ReleaseCheckException>()));
-      }
+    test('fetchLatest falls back to jsDelivr when raw is unreachable', () async {
+      final client = MockClient((req) async {
+        if (req.url.host == 'raw.githubusercontent.com') {
+          throw http.ClientException('blocked');
+        }
+        return http.Response('version: 0.1.4+4\n', 200);
+      });
+      final info = await GitHubReleaseChecker(client: client).fetchLatest();
+      expect(info.version, '0.1.4+4');
+    });
+
+    test('fetchLatest throws 网络异常 when every source is unreachable',
+        () async {
+      final client = MockClient(
+          (req) async => throw http.ClientException('blocked'));
+      final c = GitHubReleaseChecker(client: client);
+      await expectLater(
+        c.fetchLatest(),
+        throwsA(predicate((e) =>
+            e is ReleaseCheckException && e.message.contains('网络异常'))),
+      );
+    });
+
+    test('fetchLatest throws on non-200 from every source', () async {
+      final c = GitHubReleaseChecker(
+          client: MockClient((_) async => http.Response('', 404)));
+      await expectLater(c.fetchLatest(), throwsA(isA<ReleaseCheckException>()));
     });
 
     test('fetchLatest throws when the version line is missing', () async {
@@ -88,10 +109,18 @@ void main() {
       expect(GitHubReleaseChecker.parsePubspecVersion(''), isNull);
     });
 
-    test('apkDownloadUrl uses the tag and abi naming', () {
+    test('apkDownloadUrls are direct GitHub first, then a mirror', () {
       final c = GitHubReleaseChecker();
+      final urls = c.apkDownloadUrls(const ReleaseInfo(version: '0.1.4+4'),
+          'arm64-v8a');
       expect(
-        c.apkDownloadUrl(const ReleaseInfo(version: '0.1.4+4'), 'arm64-v8a'),
+        urls.first,
+        'https://github.com/Levi-xia/BearTV-App/releases/download/'
+        'v0.1.4/app-arm64-v8a-release.apk',
+      );
+      expect(
+        urls.last,
+        'https://gh-proxy.com/'
         'https://github.com/Levi-xia/BearTV-App/releases/download/'
         'v0.1.4/app-arm64-v8a-release.apk',
       );
@@ -107,12 +136,31 @@ void main() {
       addTearDown(() => tmp.delete(recursive: true));
       final f = File('${tmp.path}/a.apk');
       final heard = <double>[];
-      final size = await c.download('https://example.com/a.apk', f,
+      final size = await c.download(const ReleaseInfo(version: '0.1.4'),
+          'arm64-v8a', f,
           onProgress: heard.add);
       expect(size, bytes.length);
       expect(f.readAsBytesSync(), bytes);
       expect(heard, isNotEmpty);
       expect(heard.last, closeTo(1.0, 1e-9));
+    });
+
+    test('download falls back to the mirror when direct fails', () async {
+      final bytes = [1, 2, 3];
+      final client = MockClient((req) async {
+        if (req.url.host == 'github.com') {
+          return http.Response('', 500);
+        }
+        return http.Response.bytes(bytes, 200);
+      });
+      final c = GitHubReleaseChecker(client: client);
+      final tmp = await Directory.systemTemp.createTemp('bear_tv_upd');
+      addTearDown(() => tmp.delete(recursive: true));
+      final f = File('${tmp.path}/a.apk');
+      final size = await c.download(
+          const ReleaseInfo(version: '0.1.4'), 'arm64-v8a', f);
+      expect(size, bytes.length);
+      expect(f.readAsBytesSync(), bytes);
     });
 
     test('download maps 404 to an unpublished-release message', () async {
@@ -121,10 +169,10 @@ void main() {
       final tmp = await Directory.systemTemp.createTemp('bear_tv_upd');
       addTearDown(() => tmp.delete(recursive: true));
       await expectLater(
-        c.download('https://example.com/a.apk', File('${tmp.path}/a.apk')),
+        c.download(const ReleaseInfo(version: '0.1.4'), 'arm64-v8a',
+            File('${tmp.path}/a.apk')),
         throwsA(predicate((e) =>
-            e is ReleaseCheckException &&
-            e.message.contains('尚未发布'))),
+            e is ReleaseCheckException && e.message.contains('尚未发布'))),
       );
     });
   });
@@ -212,7 +260,7 @@ class _FakeChecker extends GitHubReleaseChecker {
   }
 
   @override
-  Future<int> download(String url, File file,
+  Future<int> download(ReleaseInfo info, String abi, File file,
       {void Function(double progress)? onProgress}) async {
     onProgress?.call(0.5);
     await file.writeAsBytes(const [1, 2, 3]);

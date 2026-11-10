@@ -166,8 +166,7 @@ class UpdateController extends ChangeNotifier {
       await dir.create(recursive: true);
       final file =
           File('${dir.path}/bear_tv_${release.tagName}_$abi.apk');
-      final size = await _checker.download(
-          _checker.apkDownloadUrl(release, abi), file,
+      final size = await _checker.download(release, abi, file,
           onProgress: (p) {
         _progress = p;
         notifyListeners();

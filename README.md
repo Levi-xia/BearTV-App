@@ -66,6 +66,7 @@
 - 设置页「版本更新」显示当前版本与设备架构，检查仓库 `main` 分支 `pubspec.yaml` 声明的版本（`Levi-xia/BearTV-App`），不走 GitHub API、不受限流影响。
 - 发现新版本时按当前设备 ABI（`arm64-v8a` / `armeabi-v7a` / `x86_64`）从 `v<版本>` 标签的 release 下载对应的 `--split-per-abi` 安装包，带进度显示；版本刚提交但 release 尚未发布时会提示稍后再试。
 - 下载完成后交由系统安装器安装（FileProvider 分享 APK，用户确认后完成更新），无需额外权限。
+- 大陆网络容错：检查版本先 `raw.githubusercontent.com`、失败回退 jsDelivr CDN；下载 APK 先 `github.com`、失败回退 gh-proxy 加速，两个源都不可用才提示网络异常。
 
 ## 技术方案
 
