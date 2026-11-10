@@ -47,8 +47,29 @@ jobs:
           fi
           echo "OK: no secrets.json in the repository"
 
+      # Release 签名：从 GitHub Secrets 解出固定 keystore 写入 key.properties。
+      # 没有它时构建会失败——缺省 debug keystore 是每个 runner 随机生成的，
+      # 用它签的 APK 无法覆盖安装（INSTALL_FAILED_UPDATE_INCOMPATIBLE）。
+      - name: Restore release signing key
+        env:
+          KEYSTORE_B64: ${{ secrets.BEAR_TV_KEYSTORE_B64 }}
+          STORE_PASSWORD: ${{ secrets.BEAR_TV_STORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.BEAR_TV_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.BEAR_TV_KEY_PASSWORD }}
+        run: |
+          if [ -z "$KEYSTORE_B64" ]; then
+            echo "::error::Missing BEAR_TV_KEYSTORE_B64 secret — releases must be signed with the fixed key to be updatable."
+            exit 1
+          fi
+          echo "$KEYSTORE_B64" | base64 -d > android/app/bear_tv_release.jks
+          echo "storeFile=app/bear_tv_release.jks" > android/key.properties
+          echo "storePassword=$STORE_PASSWORD" >> android/key.properties
+          echo "keyAlias=$KEY_ALIAS" >> android/key.properties
+          echo "keyPassword=$KEY_PASSWORD" >> android/key.properties
+          echo "OK: release signing key restored"
+
       # --split-per-abi：分别产出 armeabi-v7a / arm64-v8a / x86_64 三个 APK，
-      # 而不是一个包含全部 ABI 的巨包。release 构建已用 debug 签名，无需密钥。
+      # 而不是一个包含全部 ABI 的巨包。签名用上面的固定 release key。
       - name: Build split APKs
         run: flutter build apk --release --split-per-abi
 
