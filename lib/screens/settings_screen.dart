@@ -7,6 +7,7 @@ import '../core/update_controller.dart';
 import '../data/config_import.dart';
 import '../data/danmaku/danmaku_models.dart';
 import '../data/vod/cms_models.dart';
+import '../data/vod/cms_speed_test.dart';
 import '../widgets/chips.dart';
 import '../widgets/focus_fx.dart';
 import '../widgets/focusable.dart';
@@ -31,6 +32,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   /// Source awaiting a MENU-key delete confirmation.
   CmsSite? _pendingDelete;
+
+  /// Sources captured when the 测速 overlay opened. Snapshot on purpose: the
+  /// list must not change under the user while a run is in flight.
+  List<CmsSite> _speedTestSites = const [];
+  bool _speedTestOpen = false;
 
   /// Last import URL for this session (not persisted). Export will later reuse
   /// the same 配置导入 card.
@@ -118,6 +124,25 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   void _requestDelete(CmsSite site) {
     if (_pendingDelete == null) setState(() => _pendingDelete = site);
+  }
+
+  /// Open the speed-test overlay for every *selected* source. Deselected sources
+  /// are skipped on purpose — the overlay is a diagnosis of what playback will
+  /// actually use.
+  void _requestSpeedTest() {
+    final app = AppScope.read(context);
+    final sites =
+        app.allSites.where((s) => app.isSiteSelected(s.id)).toList();
+    if (sites.isEmpty) {
+      app.showToast(app.allSites.isEmpty
+          ? '当前没有资源站，请先添加'
+          : '请先选中要测速的资源站');
+      return;
+    }
+    setState(() {
+      _speedTestSites = sites;
+      _speedTestOpen = true;
+    });
   }
 
   /// One click opens the address keyboard (cancel / 导入); confirming fetches,
@@ -213,6 +238,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   Widget? _activeOverlay() {
     final app = AppScope.read(context);
+    if (_speedTestOpen) {
+      return _CmsSpeedOverlay(
+        sites: _speedTestSites,
+        onClose: () => setState(() => _speedTestOpen = false),
+      );
+    }
     final site = _pendingDelete;
     if (site != null) {
       return _confirmDialog(
@@ -294,9 +325,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
                               _sectionCard(
                                 title: '资源配置',
                                 subtitle:
-                                    '播放源用于按片名解析可播放地址。点击选中或取消，按菜单键(MENU)删除。',
+                                    '播放源用于按片名解析可播放地址。点击选中或取消，按菜单键(MENU)删除；「测速」可并发检测已选源的可达性与时延。',
                                 child: _CmsSourcesSection(
-                                    onRequestDelete: _requestDelete),
+                                    onRequestDelete: _requestDelete,
+                                    onRequestSpeedTest: _requestSpeedTest),
                               ),
                               const SizedBox(height: 22),
                               _sectionCard(
@@ -839,11 +871,17 @@ class _ProgressBar extends StatelessWidget {
 /// it. URLs are deliberately not shown; the add form below is the only place a
 /// URL appears.
 class _CmsSourcesSection extends StatefulWidget {
-  const _CmsSourcesSection({required this.onRequestDelete});
+  const _CmsSourcesSection({
+    required this.onRequestDelete,
+    required this.onRequestSpeedTest,
+  });
 
   /// Raised on MENU. The page owns the confirmation overlay so it can cover the
   /// whole screen instead of just this card.
   final ValueChanged<CmsSite> onRequestDelete;
+
+  /// Raised by the 测速 button; the page owns the overlay and the probes.
+  final VoidCallback onRequestSpeedTest;
 
   @override
   State<_CmsSourcesSection> createState() => _CmsSourcesSectionState();
@@ -912,11 +950,20 @@ class _CmsSourcesSectionState extends State<_CmsSourcesSection> {
             ],
           ),
           const SizedBox(height: 12),
-          Text('共 ${sites.length} 个 · 按菜单键(MENU)删除',
-              style: const TextStyle(
-                  fontSize: 14,
-                  color: AppColors.textDim,
-                  fontFamilyFallback: kFontFallback)),
+          Row(
+            children: [
+              Expanded(
+                child: Text(
+                    '共 ${sites.length} 个 · 已选 ${sites.where((s) => app.isSiteSelected(s.id)).length} 个 · 按菜单键(MENU)删除',
+                    style: const TextStyle(
+                        fontSize: 14,
+                        color: AppColors.textDim,
+                        fontFamilyFallback: kFontFallback)),
+              ),
+              const SizedBox(width: 16),
+              _Btn(label: '测速', onPressed: widget.onRequestSpeedTest),
+            ],
+          ),
         ],
         const SizedBox(height: 22),
         const _SubLabel('添加资源站'),
@@ -930,6 +977,285 @@ class _CmsSourcesSectionState extends State<_CmsSourcesSection> {
         const SizedBox(height: 16),
         _Btn(label: '添加', primary: true, onPressed: _add),
       ],
+    );
+  }
+}
+
+/// Full-screen speed-test overlay: one apiv3 probe per selected source, run
+/// concurrently, rows updating as each answer lands.
+///
+/// Rows stay in the source order while running so nothing jumps under the
+/// user's eyes; once every probe settles they are re-sorted (usable first,
+/// fastest first), which is the whole point of the feature.
+class _CmsSpeedOverlay extends StatefulWidget {
+  const _CmsSpeedOverlay({required this.sites, required this.onClose});
+
+  final List<CmsSite> sites;
+  final VoidCallback onClose;
+
+  @override
+  State<_CmsSpeedOverlay> createState() => _CmsSpeedOverlayState();
+}
+
+class _CmsSpeedOverlayState extends State<_CmsSpeedOverlay> {
+  static const _bad = Color(0xFFFF6B6B);
+
+  late final CmsSpeedTester _tester;
+
+  @override
+  void initState() {
+    super.initState();
+    _tester = CmsSpeedTester();
+    _tester.run(widget.sites);
+  }
+
+  @override
+  void dispose() {
+    _tester.dispose();
+    super.dispose();
+  }
+
+  List<CmsSpeedResult> _ordered() {
+    final list = _tester.results;
+    if (_tester.running) return list;
+    list.sort((a, b) {
+      final rank = a.sortRank.compareTo(b.sortRank);
+      if (rank != 0) return rank;
+      return (a.latency?.inMilliseconds ?? 0)
+          .compareTo(b.latency?.inMilliseconds ?? 0);
+    });
+    return list;
+  }
+
+  String _statusText(CmsSpeedResult r) => switch (r.status) {
+        CmsSpeedStatus.pending => '测试中…',
+        CmsSpeedStatus.ok =>
+          r.itemCount > 0 ? '可用 · ${r.itemCount} 条' : '可用',
+        CmsSpeedStatus.slow =>
+          r.itemCount > 0 ? '较慢 · ${r.itemCount} 条' : '较慢',
+        CmsSpeedStatus.badData => r.detail ?? '响应异常',
+        CmsSpeedStatus.timeout => '超时',
+        CmsSpeedStatus.failed => r.detail ?? '无法连接',
+      };
+
+  Color _statusColor(CmsSpeedResult r) => switch (r.status) {
+        CmsSpeedStatus.pending => AppColors.textDim,
+        CmsSpeedStatus.ok => AppColors.live,
+        CmsSpeedStatus.slow || CmsSpeedStatus.badData => AppColors.gold,
+        CmsSpeedStatus.timeout || CmsSpeedStatus.failed => _bad,
+      };
+
+  String _latencyText(Duration? d) {
+    if (d == null) return '—';
+    final ms = d.inMilliseconds;
+    return ms < 1000 ? '$ms ms' : '${(ms / 1000).toStringAsFixed(1)} s';
+  }
+
+  /// CDN phase line: the source's API can be fast while its m3u8 host is the
+  /// reason playback stalls, so it gets its own line.
+  String _cdnText(CmsSpeedResult r) {
+    if (r.cdnPending) return 'CDN 测试中…';
+    final cdn = r.cdn;
+    if (cdn == null) return 'CDN —';
+    return switch (cdn.status) {
+      CmsSpeedStatus.ok ||
+      CmsSpeedStatus.slow =>
+        'CDN ${_latencyText(cdn.latency)}',
+      CmsSpeedStatus.pending => 'CDN 测试中…',
+      CmsSpeedStatus.timeout => 'CDN 超时',
+      CmsSpeedStatus.badData || CmsSpeedStatus.failed =>
+        'CDN ${cdn.detail ?? '无法连接'}',
+    };
+  }
+
+  Color _cdnColor(CmsSpeedResult r) {
+    final cdn = r.cdn;
+    if (cdn == null || r.cdnPending) return AppColors.textDim;
+    return switch (cdn.status) {
+      CmsSpeedStatus.ok => AppColors.textDim,
+      CmsSpeedStatus.slow || CmsSpeedStatus.badData => AppColors.gold,
+      CmsSpeedStatus.timeout || CmsSpeedStatus.failed => _bad,
+      CmsSpeedStatus.pending => AppColors.textDim,
+    };
+  }
+
+  /// One source cell. Two lines instead of the earlier one-line-per-source row:
+  /// the name gets the full cell width, status + latency share the second line.
+  /// This keeps 3 columns readable and avoids a scrolling list (whose focus
+  /// paging on a TV remote was awkward).
+  Widget _card(CmsSpeedResult r) {
+    return Focusable(
+      ensureVisibleAlignment: 0.5,
+      builder: (context, focused) => Container(
+        padding: const EdgeInsets.fromLTRB(16, 12, 16, 11),
+        decoration: BoxDecoration(
+          color: focused ? AppColors.glassBorder : AppColors.glass,
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(
+              color: focused ? AppColors.accent : AppColors.hairline),
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              r.site.name,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(
+                  fontSize: 16,
+                  fontWeight: FontWeight.w600,
+                  color: AppColors.text,
+                  fontFamilyFallback: kFontFallback),
+            ),
+            const SizedBox(height: 7),
+            Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    _statusText(r),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                        fontSize: 14,
+                        fontWeight: FontWeight.w600,
+                        color: _statusColor(r),
+                        fontFamilyFallback: kFontFallback),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Text(
+                  _latencyText(r.latency),
+                  style: const TextStyle(
+                      fontSize: 14,
+                      color: AppColors.textDim,
+                      fontFamilyFallback: kFontFallback),
+                ),
+              ],
+            ),
+            const SizedBox(height: 5),
+            Text(
+              _cdnText(r),
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                  fontSize: 13,
+                  color: _cdnColor(r),
+                  fontFamilyFallback: kFontFallback),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return FocusScope(
+      autofocus: true,
+      child: ColoredBox(
+        color: const Color(0xB3000000),
+        child: Center(
+          child: Padding(
+            padding: const EdgeInsets.all(24),
+            child: ConstrainedBox(
+              constraints:
+                  const BoxConstraints(maxWidth: 1080, maxHeight: 820),
+              child: AnimatedBuilder(
+                animation: _tester,
+                builder: (context, _) {
+                  final results = _ordered();
+                  final progress = _tester.running
+                      ? '测试中 ${_tester.doneCount}/${widget.sites.length}'
+                      : '测速完成 · 共 ${widget.sites.length} 个';
+                  return Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.fromLTRB(32, 30, 32, 26),
+                    decoration: BoxDecoration(
+                      color: AppColors.cardBg,
+                      borderRadius: BorderRadius.circular(20),
+                      border: Border.all(color: AppColors.hairline),
+                    ),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(
+                          crossAxisAlignment: CrossAxisAlignment.end,
+                          children: [
+                            const Text('资源站测速',
+                                style: TextStyle(
+                                    fontSize: 24,
+                                    fontWeight: FontWeight.w800,
+                                    color: AppColors.text,
+                                    fontFamilyFallback: kFontFallback)),
+                            const Spacer(),
+                            Text(progress,
+                                style: const TextStyle(
+                                    fontSize: 15,
+                                    color: AppColors.textDim,
+                                    fontFamilyFallback: kFontFallback)),
+                          ],
+                        ),
+                        const SizedBox(height: 10),
+                        const Text(
+                            '并发探测已选中资源站的接口与列表首条 m3u8 的 CDN 时延；超过 1.2 秒标记为较慢。',
+                            style: TextStyle(
+                                fontSize: 15,
+                                height: 1.5,
+                                color: AppColors.textDim,
+                                fontFamilyFallback: kFontFallback)),
+                        const SizedBox(height: 18),
+                        Flexible(
+                          child: LayoutBuilder(
+                            builder: (context, constraints) {
+                              // 3 columns on a TV-sized card, 2 when narrow. Cards
+                              // are compact enough that even a dozen sources fit
+                              // without scrolling.
+                              const gap = 12.0;
+                              final columns =
+                                  constraints.maxWidth >= 860 ? 3 : 2;
+                              final width = (constraints.maxWidth -
+                                      gap * (columns - 1)) /
+                                  columns;
+                              return SingleChildScrollView(
+                                child: Wrap(
+                                  spacing: gap,
+                                  runSpacing: gap,
+                                  children: [
+                                    for (final r in results)
+                                      SizedBox(
+                                          width: width, child: _card(r)),
+                                  ],
+                                ),
+                              );
+                            },
+                          ),
+                        ),
+                        const SizedBox(height: 18),
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.end,
+                          children: [
+                            _Btn(
+                                label: '重新测速',
+                                onPressed: () => _tester.run(widget.sites)),
+                            const SizedBox(width: 14),
+                            _Btn(
+                                label: '关闭',
+                                primary: true,
+                                autofocus: true,
+                                onPressed: widget.onClose),
+                          ],
+                        ),
+                      ],
+                    ),
+                  );
+                },
+              ),
+            ),
+          ),
+        ),
+      ),
     );
   }
 }
