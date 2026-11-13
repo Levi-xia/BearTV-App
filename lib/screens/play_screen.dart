@@ -38,9 +38,9 @@ class PlayScreen extends StatefulWidget {
 }
 
 class _PlayScreenState extends State<PlayScreen> {
-  // Focus anchor for the first side-panel control. Pressing Right on the player
-  // jumps focus here (播放设置), instead of drifting up to the header search.
-  final FocusNode _panelNode = FocusNode(debugLabel: 'playSidePanelFirst');
+  // One node per action tile. Right on the player jumps to the first visible
+  // tile (播放设置) instead of drifting up to the header search.
+  final _ActionNodes _actionNodes = _ActionNodes();
 
   // Focus anchor for the player surface. On entry we explicitly focus this
   // (not just rely on autofocus) so the D-pad starts on the player — OK then
@@ -89,14 +89,14 @@ class _PlayScreenState extends State<PlayScreen> {
   void _closeAction() {
     if (_action == null) return;
     setState(() => _action = null);
-    _panelNode.requestFocus();
+    _actionNodes.focusFirst(_app);
   }
 
   void _closeDownloadSheet() {
     if (!_downloadOpen) return;
     setState(() => _downloadOpen = false);
     // Both sheets are opened from a tile, so hand focus back to the grid.
-    _panelNode.requestFocus();
+    _actionNodes.focusFirst(_app);
   }
 
   @override
@@ -104,7 +104,7 @@ class _PlayScreenState extends State<PlayScreen> {
     if (_app.playOverlayBackInterceptor == _overlayBackInterceptor) {
       _app.playOverlayBackInterceptor = null;
     }
-    _panelNode.dispose();
+    _actionNodes.dispose();
     _playerNode.dispose();
     super.dispose();
   }
@@ -151,7 +151,8 @@ class _PlayScreenState extends State<PlayScreen> {
                                 aspectRatio: 16 / 9,
                                 child: _Player(
                                     playerNode: _playerNode,
-                                    panelNode: _panelNode)),
+                                    onPanelRight: () =>
+                                        _actionNodes.focusFirst(_app))),
                           ),
                         ),
                       ),
@@ -159,7 +160,7 @@ class _PlayScreenState extends State<PlayScreen> {
                       SizedBox(
                         width: AppDims.sideW,
                         child: _SidePanel(
-                          panelNode: _panelNode,
+                          nodes: _actionNodes,
                           onOpenAction: _openAction,
                         ),
                       ),
@@ -230,9 +231,12 @@ class _VideoSurface extends StatelessWidget {
 }
 
 class _Player extends StatelessWidget {
-  const _Player({required this.playerNode, required this.panelNode});
+  const _Player({required this.playerNode, required this.onPanelRight});
   final FocusNode playerNode;
-  final FocusNode panelNode;
+
+  /// Hands focus to the first side-panel tile. The panel owns one stable node
+  /// per action, so this always lands on a real, already-mounted tile.
+  final VoidCallback onPanelRight;
 
   @override
   Widget build(BuildContext context) {
@@ -245,9 +249,11 @@ class _Player extends StatelessWidget {
       onPressed: () => app.setFullscreen(true), // OK on player → fullscreen
       onKeyEvent: (node, event) {
         // Right off the player → 播放设置 side panel (not the header search).
-        if ((event is KeyDownEvent || event is KeyRepeatEvent) &&
+        // Only on the initial key-down: a held key repeats after focus has
+        // already moved, and acting on the repeat would skip a tile.
+        if (event is KeyDownEvent &&
             event.logicalKey == LogicalKeyboardKey.arrowRight) {
-          panelNode.requestFocus();
+          onPanelRight();
           return KeyEventResult.handled;
         }
         return KeyEventResult.ignored;
@@ -559,8 +565,8 @@ class _ProgressBar extends StatelessWidget {
 /// [_ActionSheet]. The old always-expanded chip lists made this column so tall
 /// that half of it ran off screen on a 1080p TV.
 class _SidePanel extends StatelessWidget {
-  const _SidePanel({required this.panelNode, required this.onOpenAction});
-  final FocusNode panelNode;
+  const _SidePanel({required this.nodes, required this.onOpenAction});
+  final _ActionNodes nodes;
   final void Function(_PlayAction) onOpenAction;
 
   @override
@@ -616,7 +622,7 @@ class _SidePanel extends StatelessWidget {
         ],
         const _Hr(),
         // The player's Right key lands on the first tile, whatever it is.
-        _ActionGrid(firstNode: panelNode, onOpen: onOpenAction),
+        _ActionGrid(nodes: nodes, onOpen: onOpenAction),
       ],
     );
   }
@@ -644,29 +650,66 @@ enum _PlayAction {
 
 const double _kActionTile = 76;
 
-class _ActionGrid extends StatelessWidget {
-  const _ActionGrid({this.firstNode, required this.onOpen});
+/// The tiles the grid shows, in order. 切换资源 leads whenever switching is
+/// possible (several lines, other sources, or a search still running) because
+/// it answers "what am I watching from?"; the rest always follow.
+List<_PlayAction> _visibleActions(AppController app) {
+  final detail = app.currentDetail;
+  final hasLines = detail != null && detail.playLines.length > 1;
+  return [
+    if (hasLines || app.resourceOptions.isNotEmpty || app.loadingResources)
+      _PlayAction.sources,
+    _PlayAction.download,
+    _PlayAction.speed,
+    _PlayAction.skip,
+    _PlayAction.danmaku,
+  ];
+}
 
-  final FocusNode? firstNode;
+/// One stable [FocusNode] per action, owned by whoever renders the grid.
+///
+/// A tile keeps the same node for its whole life. Previously the first tile
+/// borrowed a single shared node, so when 切换资源 appeared (the cross-source
+/// search returned) that node was re-parented from 下载 to the new first tile —
+/// leaving the highlighted tile and the focused node briefly out of step, which
+/// cost a dead arrow press right after focus entered the panel.
+class _ActionNodes {
+  final Map<_PlayAction, FocusNode> _nodes = {
+    for (final action in _PlayAction.values)
+      action: FocusNode(debugLabel: 'playAction:${action.name}'),
+  };
+
+  FocusNode operator [](_PlayAction action) => _nodes[action]!;
+
+  /// Focuses the first tile that is currently mounted.
+  void focusFirst(AppController app) {
+    for (final action in _visibleActions(app)) {
+      final node = _nodes[action]!;
+      if (node.context != null) {
+        node.requestFocus();
+        return;
+      }
+    }
+  }
+
+  void dispose() {
+    for (final node in _nodes.values) {
+      node.dispose();
+    }
+  }
+}
+
+class _ActionGrid extends StatelessWidget {
+  const _ActionGrid({required this.nodes, required this.onOpen});
+
+  final _ActionNodes nodes;
   final void Function(_PlayAction) onOpen;
 
   static const double _gap = 12;
 
   @override
   Widget build(BuildContext context) {
-    final app = AppScope.of(context);
-    final detail = app.currentDetail;
-    final hasLines = detail != null && detail.playLines.length > 1;
-    final actions = <_PlayAction>[
-      // 线路 and 其他资源 are the same choice ("what am I watching from?"), so
-      // they share one entry; offer it as soon as either has something to pick.
-      if (hasLines || app.resourceOptions.isNotEmpty || app.loadingResources)
-        _PlayAction.sources,
-      _PlayAction.download,
-      _PlayAction.speed,
-      _PlayAction.skip,
-      _PlayAction.danmaku,
-    ];
+    final actions = _visibleActions(AppScope.of(context));
     return Wrap(
       spacing: _gap,
       runSpacing: _gap,
@@ -675,8 +718,17 @@ class _ActionGrid extends StatelessWidget {
           _ActionTile(
             key: ValueKey('playAction:${actions[i].name}'),
             action: actions[i],
-            focusNode: i == 0 ? firstNode : null,
+            focusNode: nodes[actions[i]],
             onPressed: () => onOpen(actions[i]),
+            // Move tile by tile by index instead of letting the geometric
+            // policy guess: one press always equals one tile, and the row's
+            // ends (nothing left of the first tile, nothing right of the last)
+            // fall back to the default traversal.
+            onNext: i + 1 < actions.length
+                ? () => nodes[actions[i + 1]].requestFocus()
+                : null,
+            onPrevious:
+                i > 0 ? () => nodes[actions[i - 1]].requestFocus() : null,
           ),
       ],
     );
@@ -692,11 +744,17 @@ class _ActionTile extends StatelessWidget {
     required this.action,
     required this.onPressed,
     this.focusNode,
+    this.onNext,
+    this.onPrevious,
   });
 
   final _PlayAction action;
   final VoidCallback onPressed;
   final FocusNode? focusNode;
+
+  /// Explicit horizontal neighbours (null at the row ends).
+  final VoidCallback? onNext;
+  final VoidCallback? onPrevious;
 
   @override
   Widget build(BuildContext context) {
@@ -706,6 +764,22 @@ class _ActionTile extends StatelessWidget {
       child: Focusable(
         focusNode: focusNode,
         onPressed: onPressed,
+        onKeyEvent: (node, event) {
+          if (event is! KeyDownEvent && event is! KeyRepeatEvent) {
+            return KeyEventResult.ignored;
+          }
+          if (event.logicalKey == LogicalKeyboardKey.arrowRight &&
+              onNext != null) {
+            onNext!();
+            return KeyEventResult.handled;
+          }
+          if (event.logicalKey == LogicalKeyboardKey.arrowLeft &&
+              onPrevious != null) {
+            onPrevious!();
+            return KeyEventResult.handled;
+          }
+          return KeyEventResult.ignored;
+        },
         builder: (context, focused) {
           final base = BoxDecoration(
             color: AppColors.glass,
@@ -758,8 +832,7 @@ class _ActionSheetState extends State<_ActionSheet> {
     super.initState();
     // Autofocus on a FocusScope only focuses the scope node itself, which has
     // no action of its own: OK and the arrows did nothing until a leaf was
-    // focused. Move into the first control explicitly, after the frame that
-    // attaches it.
+    // focused. Move into the body explicitly, after the frame that attaches it.
     WidgetsBinding.instance.addPostFrameCallback((_) => _claimFirstFocus());
   }
 
@@ -848,9 +921,9 @@ class _ActionSheetState extends State<_ActionSheet> {
   Widget _body() {
     switch (widget.action) {
       case _PlayAction.sources:
-        return const _SwitchResourceSection();
+        return const _SwitchResourceSection(claimInitial: true);
       case _PlayAction.speed:
-        return const _SpeedSection(showLabel: false);
+        return const _SpeedSection(showLabel: false, claimInitial: true);
       case _PlayAction.skip:
         return const _SkipSection(showLabel: false);
       case _PlayAction.danmaku:
@@ -929,8 +1002,45 @@ class _Hr extends StatelessWidget {
 /// 切换资源 sheet body: the current resource's play lines (when it exposes more
 /// than one) and the same title offered by other sources, under one entry —
 /// both answer the same question, "what am I watching from?".
-class _SwitchResourceSection extends StatelessWidget {
-  const _SwitchResourceSection();
+class _SwitchResourceSection extends StatefulWidget {
+  const _SwitchResourceSection({this.claimInitial = false});
+
+  /// Opens the sheet with focus on the line that is currently playing.
+  final bool claimInitial;
+
+  @override
+  State<_SwitchResourceSection> createState() => _SwitchResourceSectionState();
+}
+
+class _SwitchResourceSectionState extends State<_SwitchResourceSection> {
+  /// One node per line chip, kept for the life of the sheet: reusing a single
+  /// node and moving it to "the selected chip" swaps the focused element's
+  /// node out from under it (dropping focus) whenever the selection changes.
+  final Map<int, FocusNode> _lineNodes = {};
+
+  FocusNode _lineNode(int index) => _lineNodes.putIfAbsent(
+      index, () => FocusNode(debugLabel: 'playLine$index'));
+
+  @override
+  void initState() {
+    super.initState();
+    if (!widget.claimInitial) return;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      final app = AppScope.read(context);
+      if ((app.currentDetail?.playLines.length ?? 0) <= 1) return;
+      final node = _lineNodes[app.lineIndex];
+      if (node?.context != null) node!.requestFocus();
+    });
+  }
+
+  @override
+  void dispose() {
+    for (final node in _lineNodes.values) {
+      node.dispose();
+    }
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -953,6 +1063,7 @@ class _SwitchResourceSection extends StatelessWidget {
                 SelectableChip(
                   label: lines[i].name,
                   selected: i == app.lineIndex,
+                  focusNode: _lineNode(i),
                   onPressed: () => app.selectLine(i),
                 ),
             ],
@@ -1001,9 +1112,44 @@ class _SwitchResourceSection extends StatelessWidget {
 }
 
 /// 倍速 chips. [showLabel] is false inside an [_ActionSheet].
-class _SpeedSection extends StatelessWidget {
-  const _SpeedSection({this.showLabel = true});
+class _SpeedSection extends StatefulWidget {
+  const _SpeedSection({this.showLabel = true, this.claimInitial = false});
   final bool showLabel;
+
+  /// Opens the sheet with focus on the rate already in use, so OK/←/→ act
+  /// relative to the user's choice instead of jumping to the slowest chip.
+  final bool claimInitial;
+
+  @override
+  State<_SpeedSection> createState() => _SpeedSectionState();
+}
+
+class _SpeedSectionState extends State<_SpeedSection> {
+  /// A node per rate, stable for the life of the sheet — a chip keeps the same
+  /// node when the selection moves, so focus is never swapped mid-sheet.
+  late final List<FocusNode> _nodes = [
+    for (final rate in kPlaybackRates)
+      FocusNode(debugLabel: 'playSpeed:${rate}x'),
+  ];
+
+  @override
+  void initState() {
+    super.initState();
+    if (!widget.claimInitial) return;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      final index = kPlaybackRates.indexOf(AppScope.read(context).speed);
+      _nodes[index < 0 ? 0 : index].requestFocus();
+    });
+  }
+
+  @override
+  void dispose() {
+    for (final node in _nodes) {
+      node.dispose();
+    }
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -1012,7 +1158,7 @@ class _SpeedSection extends StatelessWidget {
       crossAxisAlignment: CrossAxisAlignment.start,
       mainAxisSize: MainAxisSize.min,
       children: [
-        if (showLabel) ...[
+        if (widget.showLabel) ...[
           const _Label('倍速'),
           const SizedBox(height: 10),
         ],
@@ -1025,6 +1171,7 @@ class _SpeedSection extends StatelessWidget {
                 label:
                     kPlaybackRates[i] == 1.0 ? '1.0x' : '${kPlaybackRates[i]}x',
                 selected: app.speed == kPlaybackRates[i],
+                focusNode: _nodes[i],
                 onPressed: () => app.setSpeed(kPlaybackRates[i]),
               ),
           ],
@@ -1187,8 +1334,9 @@ class _FullscreenPlayerState extends State<_FullscreenPlayer> {
   // ←/→ seek and OK pause straight away instead of drifting onto page widgets.
   final FocusNode _rootNode = FocusNode(debugLabel: 'fullscreenPlayer');
   // First tile of the settings menu, so closing a nested sheet lands back on
-  // the grid instead of nowhere.
-  final FocusNode _menuFirstNode = FocusNode(debugLabel: 'fullscreenMenuFirst');
+  // the grid instead of nowhere. One stable node per action, same as the page
+  // side panel.
+  final _ActionNodes _actionNodes = _ActionNodes();
   String? _osd;
   Timer? _osdTimer;
   Timer? _progressTimer;
@@ -1212,7 +1360,7 @@ class _FullscreenPlayerState extends State<_FullscreenPlayer> {
       // A control sheet nested in the menu closes first, keeping the menu open.
       if (_action != null) {
         setState(() => _action = null);
-        _menuFirstNode.requestFocus();
+        _actionNodes.focusFirst(_app);
         return true;
       }
       if (!_menuOpen && !_episodesOpen && !_downloadOpen) return false;
@@ -1257,7 +1405,7 @@ class _FullscreenPlayerState extends State<_FullscreenPlayer> {
     _osdTimer?.cancel();
     _progressTimer?.cancel();
     _rootNode.dispose();
-    _menuFirstNode.dispose();
+    _actionNodes.dispose();
     super.dispose();
   }
 
@@ -1370,7 +1518,7 @@ class _FullscreenPlayerState extends State<_FullscreenPlayer> {
               ),
             if (_menuOpen)
               _FullscreenMenu(
-                firstNode: _menuFirstNode,
+                nodes: _actionNodes,
                 onClose: _closeOverlays,
                 onOpenDownloads: () => setState(() {
                   _menuOpen = false;
@@ -1395,12 +1543,12 @@ class _FullscreenPlayerState extends State<_FullscreenPlayer> {
 /// [_ActionGrid], with each tile opening the same [_ActionSheet] over the video.
 class _FullscreenMenu extends StatefulWidget {
   const _FullscreenMenu({
-    required this.firstNode,
+    required this.nodes,
     required this.onClose,
     required this.onOpenDownloads,
     required this.onOpenAction,
   });
-  final FocusNode firstNode;
+  final _ActionNodes nodes;
   final VoidCallback onClose;
   final VoidCallback onOpenDownloads;
   final void Function(_PlayAction) onOpenAction;
@@ -1414,7 +1562,7 @@ class _FullscreenMenuState extends State<_FullscreenMenu> {
   void initState() {
     super.initState();
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (mounted) widget.firstNode.requestFocus();
+      if (mounted) widget.nodes.focusFirst(AppScope.read(context));
     });
   }
 
@@ -1472,7 +1620,7 @@ class _FullscreenMenuState extends State<_FullscreenMenu> {
                 ),
                 const SizedBox(height: 20),
                 _ActionGrid(
-                  firstNode: widget.firstNode,
+                  nodes: widget.nodes,
                   onOpen: (action) {
                     if (action == _PlayAction.download) {
                       widget.onOpenDownloads();

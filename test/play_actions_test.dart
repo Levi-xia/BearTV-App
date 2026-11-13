@@ -122,6 +122,22 @@ Future<void> _key(WidgetTester tester, LogicalKeyboardKey key) async {
   await tester.pump(const Duration(milliseconds: 60));
 }
 
+/// The action tile that currently owns the D-pad focus, if any.
+String? _focusedAction() {
+  final context = FocusManager.instance.primaryFocus?.context;
+  if (context is! Element) return null;
+  String? found;
+  context.visitAncestorElements((element) {
+    final key = element.widget.key;
+    if (key is ValueKey<String> && key.value.startsWith('playAction:')) {
+      found = key.value.substring('playAction:'.length);
+      return false;
+    }
+    return true;
+  });
+  return found;
+}
+
 void main() {
   testWidgets('side panel is an icon-only grid; sheets open focused',
       (tester) async {
@@ -146,12 +162,17 @@ void main() {
     expect(find.text('倍速'), findsOneWidget);
     expect(find.text('关闭'), findsNothing);
 
-    // Focus is already on the first chip, so OK acts without any arrow press.
+    // Focus opens on the rate already in use (1.0x), so OK is a no-op …
     await _key(tester, LogicalKeyboardKey.enter);
-    expect(c.speed, 0.5);
-    await _key(tester, LogicalKeyboardKey.arrowRight);
+    expect(c.speed, 1.0);
+    // … and the arrows move relative to it.
+    await _key(tester, LogicalKeyboardKey.arrowLeft);
     await _key(tester, LogicalKeyboardKey.enter);
     expect(c.speed, 0.75);
+    // Picking a rate keeps the sheet usable — focus stays on the chip grid.
+    await _key(tester, LogicalKeyboardKey.arrowRight);
+    await _key(tester, LogicalKeyboardKey.enter);
+    expect(c.speed, 1.0);
 
     // Back closes only the sheet and keeps the user on the play page.
     c.backFromKey();
@@ -163,6 +184,30 @@ void main() {
     // the player behind it. (With one line the first tile is 下载.)
     await _key(tester, LogicalKeyboardKey.select);
     expect(find.text('下载选集'), findsOneWidget);
+  });
+
+  testWidgets('Right walks the panel one tile per press — no dead press',
+      (tester) async {
+    final c = _controller(lines: 2);
+    addTearDown(c.dispose);
+    await _pump(tester, c);
+
+    // Entry: the player owns focus, and nothing on the panel is highlighted.
+    expect(_focusedAction(), isNull);
+
+    // Player → first tile (切换资源), then exactly one tile per press — the
+    // shared-node re-parenting used to cost a dead press right here.
+    await _key(tester, LogicalKeyboardKey.arrowRight);
+    expect(_focusedAction(), 'sources');
+    await _key(tester, LogicalKeyboardKey.arrowRight);
+    expect(_focusedAction(), 'download');
+    await _key(tester, LogicalKeyboardKey.arrowRight);
+    expect(_focusedAction(), 'speed');
+    // Left walks back the same way.
+    await _key(tester, LogicalKeyboardKey.arrowLeft);
+    expect(_focusedAction(), 'download');
+    await _key(tester, LogicalKeyboardKey.arrowLeft);
+    expect(_focusedAction(), 'sources');
   });
 
   testWidgets('线路 lives inside the 切换资源 sheet', (tester) async {
@@ -183,6 +228,23 @@ void main() {
     await _key(tester, LogicalKeyboardKey.arrowRight);
     await _key(tester, LogicalKeyboardKey.enter);
     expect(c.lineIndex, 1);
+  });
+
+  testWidgets('切换资源 opens on the line being played', (tester) async {
+    final c = _controller(lines: 2);
+    addTearDown(c.dispose);
+    c.lineIndex = 1;
+    await _pump(tester, c);
+
+    await tester.tap(_tile('sources'));
+    await tester.pump(const Duration(milliseconds: 300));
+    // Focus starts on 线路2 (the line in use): OK re-selects it, one ← moves
+    // to 线路1.
+    await _key(tester, LogicalKeyboardKey.enter);
+    expect(c.lineIndex, 1);
+    await _key(tester, LogicalKeyboardKey.arrowLeft);
+    await _key(tester, LogicalKeyboardKey.enter);
+    expect(c.lineIndex, 0);
   });
 
   testWidgets('下载 opens the episode sheet focused — no 下载管理 entry',
@@ -222,8 +284,10 @@ void main() {
     await tester.pump(const Duration(milliseconds: 300));
     expect(find.text('倍速'), findsOneWidget);
     expect(find.text('关闭'), findsNothing);
+    // Opens on the current rate (1.0x); ← then picks 0.75x.
+    await _key(tester, LogicalKeyboardKey.arrowLeft);
     await _key(tester, LogicalKeyboardKey.enter);
-    expect(c.speed, 0.5);
+    expect(c.speed, 0.75);
 
     // Back closes the sheet, keeps the menu, and puts focus back on the grid:
     // OK then opens the first tile (切换资源).
