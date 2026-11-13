@@ -21,11 +21,15 @@ class SettingsStore {
     List<String> Function()? seededSelectedIds,
     List<IptvSource> Function()? seededIptvSources,
     List<DanmakuHost> Function()? seededDanmakuHosts,
+    String? seededTmdbApiKey,
+    String? seededProxyBase,
   })  : _store = store ?? SharedPrefsStore(),
         _cmsSeed = seededCmsSites,
         _selectedSeed = seededSelectedIds,
         _iptvSeed = seededIptvSources,
-        _danmakuSeed = seededDanmakuHosts;
+        _danmakuSeed = seededDanmakuHosts,
+        _tmdbKeySeed = seededTmdbApiKey,
+        _proxyBaseSeed = seededProxyBase;
 
   final KeyValueStore _store;
 
@@ -35,6 +39,11 @@ class SettingsStore {
   final List<String> Function()? _selectedSeed;
   final List<IptvSource> Function()? _iptvSeed;
   final List<DanmakuHost> Function()? _danmakuSeed;
+
+  /// Overrides for the TMDB build-time seeds; tests inject them because the
+  /// `String.fromEnvironment` defines are empty under `flutter test`.
+  final String? _tmdbKeySeed;
+  final String? _proxyBaseSeed;
 
   /// When true (production default), an unset key falls back to
   /// [defaultTmdbApiKey], which is the build-time `TMDB_API_KEY` define. An
@@ -50,6 +59,11 @@ class SettingsStore {
   /// Default TMDB reverse-proxy origin from the build-time `TMDB_PROXY_BASE`
   /// define. Empty → direct TMDB endpoints.
   static String get defaultProxyBase => Env.tmdbProxyBase;
+
+  /// Instance-level build-time seeds (tests override the `String.fromEnvironment`
+  /// values, which are always empty under `flutter test`).
+  String get _defaultTmdbApiKey => _tmdbKeySeed ?? defaultTmdbApiKey;
+  String get _defaultProxyBase => _proxyBaseSeed ?? defaultProxyBase;
 
   static const _kApiKey = 'tmdbApiKey';
   static const _kSelectedIds = 'selectedSourceIds';
@@ -72,8 +86,15 @@ class SettingsStore {
   /// overwrites the saved sources/hosts, so changing `secrets.json` and
   /// rebuilding is visible in Settings. An empty define leaves the user's saved
   /// config untouched.
+  ///
+  /// The TMDB key/proxy are different: they are seeded **only when the store
+  /// has never held them**, then they are durable like any manually entered
+  /// value. Without this a secrets build merely fell back to the define on
+  /// every read, so updating to a build compiled without secrets made the key
+  /// and proxy look like they had been wiped while everything else survived.
   Future<void> init() async {
     await _store.init();
+    await _seedTmdbDefaults();
     final cms = _defaultCmsSites();
     if (cms.isNotEmpty) {
       await setCmsSites(cms);
@@ -88,6 +109,20 @@ class SettingsStore {
     if (hosts.isNotEmpty) {
       await setDanmakuHosts(hosts);
       await setDanmakuDefaultHostId(hosts.first.id);
+    }
+  }
+
+  /// Persist the build-time TMDB key/proxy on first sight. Only absent values
+  /// are seeded: a value already in the store is the user's (or a previous
+  /// build's) and must never be overwritten by a later build.
+  Future<void> _seedTmdbDefaults() async {
+    if (_store.getString(_kApiKey) == null) {
+      final key = seedDefaultKey ? _defaultTmdbApiKey.trim() : '';
+      if (key.isNotEmpty) await _store.setString(_kApiKey, key);
+    }
+    if (_store.getString(_kProxyBase) == null) {
+      final base = _defaultProxyBase.trim();
+      if (base.isNotEmpty) await _store.setString(_kProxyBase, base);
     }
   }
 
@@ -148,7 +183,7 @@ class SettingsStore {
   /// to [defaultProxyBase] when unset or cleared.
   String get proxyBase {
     final v = _store.getString(_kProxyBase)?.trim();
-    return (v == null || v.isEmpty) ? defaultProxyBase : v;
+    return (v == null || v.isEmpty) ? _defaultProxyBase : v;
   }
 
   Future<void> setProxyBase(String base) =>
@@ -156,7 +191,7 @@ class SettingsStore {
 
   String get tmdbApiKey {
     final v = _store.getString(_kApiKey);
-    if (v == null) return seedDefaultKey ? defaultTmdbApiKey : '';
+    if (v == null) return seedDefaultKey ? _defaultTmdbApiKey : '';
     return v.trim(); // present-but-empty means the user explicitly cleared it
   }
 

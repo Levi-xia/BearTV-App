@@ -196,4 +196,84 @@ void main() {
       expect(s.danmakuHosts.map((h) => h.id), ['mine']);
     });
   });
+
+  group('TMDB key and proxy', () {
+    test('build-time values are persisted on init so they survive updates',
+        () async {
+      final store = MemoryKeyValueStore();
+      final s = SettingsStore(
+        store: store,
+        seededTmdbApiKey: 'seed-key',
+        seededProxyBase: 'https://proxy.seed',
+      );
+
+      await s.init();
+
+      expect(store.getString('tmdbApiKey'), 'seed-key');
+      expect(store.getString('tmdbProxyBase'), 'https://proxy.seed');
+    });
+
+    test('a later build without defines keeps the persisted values', () async {
+      final store = MemoryKeyValueStore();
+      await SettingsStore(
+        store: store,
+        seededTmdbApiKey: 'seed-key',
+        seededProxyBase: 'https://proxy.seed',
+      ).init();
+
+      // Same on-disk store, new build compiled without secrets.
+      final upgraded = SettingsStore(store: store);
+      await upgraded.init();
+
+      expect(upgraded.tmdbApiKey, 'seed-key');
+      expect(upgraded.proxyBase, 'https://proxy.seed');
+      expect(upgraded.proxyEnabled, isTrue);
+    });
+
+    test('seeding never overwrites a value the user already saved', () async {
+      final store = MemoryKeyValueStore({
+        'tmdbApiKey': 'my-key',
+        'tmdbProxyBase': 'https://my.proxy',
+      });
+      final s = SettingsStore(
+        store: store,
+        seededTmdbApiKey: 'seed-key',
+        seededProxyBase: 'https://proxy.seed',
+      );
+
+      await s.init();
+
+      expect(s.tmdbApiKey, 'my-key');
+      expect(s.proxyBase, 'https://my.proxy');
+      expect(store.getString('tmdbApiKey'), 'my-key');
+      expect(store.getString('tmdbProxyBase'), 'https://my.proxy');
+    });
+
+    test('an explicitly cleared key stays cleared across restarts', () async {
+      final store = MemoryKeyValueStore();
+      final s = SettingsStore(store: store, seededTmdbApiKey: 'seed-key');
+      await s.init();
+      await s.setTmdbApiKey('');
+
+      final restarted = SettingsStore(store: store, seededTmdbApiKey: 'seed-key');
+      await restarted.init();
+
+      expect(restarted.tmdbApiKey, '');
+    });
+
+    test('seedDefaultKey=false keeps the build-time key out of the store',
+        () async {
+      final store = MemoryKeyValueStore();
+      final s = SettingsStore(
+        store: store,
+        seedDefaultKey: false,
+        seededTmdbApiKey: 'seed-key',
+      );
+
+      await s.init();
+
+      expect(s.tmdbApiKey, '');
+      expect(store.getString('tmdbApiKey'), isNull);
+    });
+  });
 }
