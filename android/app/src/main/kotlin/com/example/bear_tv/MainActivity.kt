@@ -10,6 +10,7 @@ import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
 import java.io.File
+import java.security.MessageDigest
 
 class MainActivity : FlutterActivity() {
     private var updaterChannel: MethodChannel? = null
@@ -41,8 +42,11 @@ class MainActivity : FlutterActivity() {
                             result.error("bad_path", "missing apk path", null)
                         } else {
                             try {
+                                verifyInPlaceUpdate(File(path))
                                 installApk(File(path))
                                 result.success(null)
+                            } catch (e: InstallBlocked) {
+                                result.error("install_blocked", e.message, null)
                             } catch (e: Exception) {
                                 result.error("install_failed", e.message, null)
                             }
@@ -124,6 +128,70 @@ class MainActivity : FlutterActivity() {
         }
         startActivity(intent)
     }
+
+    /**
+     * Refuses an APK Android would not accept as an in-place update.
+     *
+     * The system only replaces an app while the package name, signing
+     * certificate and a non-decreasing versionCode all match. Otherwise the
+     * install fails with INSTALL_FAILED_* and the only way forward is to
+     * uninstall first — which deletes `/data/data/<pkg>` and with it every
+     * preference, the play history and all downloaded episodes. Checking here
+     * turns that silent wipe into a readable reason.
+     */
+    private fun verifyInPlaceUpdate(apk: File) {
+        if (!apk.exists()) throw InstallBlocked("安装包不存在，请重新下载")
+        val flags = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            PackageManager.GET_SIGNING_CERTIFICATES
+        } else {
+            @Suppress("DEPRECATION") PackageManager.GET_SIGNATURES
+        }
+        val archive = packageManager.getPackageArchiveInfo(apk.absolutePath, flags)
+            ?: throw InstallBlocked("安装包解析失败，请重新下载")
+        if (archive.packageName != packageName) {
+            throw InstallBlocked("安装包与当前应用不一致（${archive.packageName}），已取消安装")
+        }
+        val installed = packageInfo()
+        val newCode = versionCodeOf(archive)
+        val oldCode = versionCodeOf(installed)
+        if (newCode < oldCode) {
+            throw InstallBlocked(
+                "安装包版本 ${archive.versionName}（$newCode）低于当前版本 " +
+                    "${installed.versionName}（$oldCode），系统只能先卸载再安装，" +
+                    "设置、播放记录和下载会一起清空。请用更高的版本号重新构建",
+            )
+        }
+        if (signerDigests(installed) != signerDigests(archive)) {
+            throw InstallBlocked(
+                "安装包签名与当前版本不一致，系统只能先卸载再安装，" +
+                    "设置、播放记录和下载会一起清空。请改用同一 keystore 构建",
+            )
+        }
+    }
+
+    private fun versionCodeOf(info: PackageInfo): Long =
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            info.longVersionCode
+        } else {
+            @Suppress("DEPRECATION") info.versionCode.toLong()
+        }
+
+    @Suppress("DEPRECATION")
+    private fun signerDigests(info: PackageInfo): Set<String> {
+        val signatures = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            info.signingInfo?.apkContentsSigners
+        } else {
+            info.signatures
+        }
+        return signatures?.map { sha256(it.toByteArray()) }?.toSet() ?: emptySet()
+    }
+
+    private fun sha256(bytes: ByteArray): String =
+        MessageDigest.getInstance("SHA-256").digest(bytes)
+            .joinToString("") { "%02x".format(it) }
+
+    /** Native-side refusal to install; the message is shown verbatim in the UI. */
+    private class InstallBlocked(message: String) : Exception(message)
 
     private companion object {
         const val CHANNEL = "bear_tv/updater"

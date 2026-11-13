@@ -202,6 +202,13 @@ class UpdateController extends ChangeNotifier {
 
   static String _friendly(Object e) {
     if (e is ReleaseCheckException) return e.message;
+    // Native refuses an update Android would only accept after an uninstall
+    // (signing key or versionCode mismatch) and says why. That text is the
+    // whole point of the check — never replace it with a generic message.
+    if (e is PlatformException && e.code == 'install_blocked') {
+      final msg = e.message?.trim();
+      if (msg != null && msg.isNotEmpty) return msg;
+    }
     if (e is MissingPluginException || e is PlatformException) {
       return '当前设备不支持此操作';
     }

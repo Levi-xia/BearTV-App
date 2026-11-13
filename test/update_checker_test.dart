@@ -243,6 +243,24 @@ void main() {
       expect(c.state, UpdateState.failed);
       expect(c.error, '当前设备不支持此操作');
     });
+
+    test('install refused by native shows its reason, not a generic error',
+        () async {
+      final p = _BlockedInstallPlatform();
+      final tmp = await Directory.systemTemp.createTemp('bear_tv_blocked');
+      addTearDown(() => tmp.delete(recursive: true));
+      p.downloadDir = tmp.path;
+      final c = UpdateController(
+          checker: _FakeChecker(const ReleaseInfo(version: '0.1.4')),
+          platform: p);
+      await c.check();
+      await c.download();
+      await c.install();
+      expect(c.state, UpdateState.failed);
+      // The native text explains that an uninstall (and therefore a wipe of
+      // settings/history/downloads) would be required — keep it.
+      expect(c.error, contains('签名'));
+    });
   });
 }
 
@@ -296,4 +314,15 @@ class _ThrowingPlatform implements UpdaterPlatform {
   @override
   Future<void> installApk(String filePath) async =>
       throw MissingPluginException();
+}
+
+/// Native's in-place-update check (see MainActivity.verifyInPlaceUpdate)
+/// rejects an APK whose signature/versionCode would force an uninstall.
+class _BlockedInstallPlatform extends _FakePlatform {
+  @override
+  Future<void> installApk(String filePath) async => throw PlatformException(
+        code: 'install_blocked',
+        message: '安装包签名与当前版本不一致，系统只能先卸载再安装，'
+            '设置、播放记录和下载会一起清空。请改用同一 keystore 构建',
+      );
 }
