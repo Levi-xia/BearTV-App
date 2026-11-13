@@ -26,13 +26,15 @@ class DynamicBackground extends StatelessWidget {
                   return FadeTransition(
                     opacity: animation,
                     child: ScaleTransition(
-                      scale: Tween<double>(begin: 1.06, end: 1.0).animate(animation),
+                      scale: Tween<double>(begin: 1.06, end: 1.0)
+                          .animate(animation),
                       child: child,
                     ),
                   );
                 },
                 child: url == null
-                    ? const ColoredBox(key: ValueKey('empty'), color: AppColors.bg)
+                    ? const ColoredBox(
+                        key: ValueKey('empty'), color: AppColors.bg)
                     : Image.network(
                         url,
                         key: ValueKey(url),
@@ -86,7 +88,12 @@ class _TintLayers extends StatelessWidget {
               gradient: LinearGradient(
                 begin: Alignment(-0.9, -0.4),
                 end: Alignment(0.9, 0.4),
-                colors: [_bg, Color(0xD104060D), Color(0x4004060D), Color(0x9904060D)],
+                colors: [
+                  _bg,
+                  Color(0xD104060D),
+                  Color(0x4004060D),
+                  Color(0x9904060D)
+                ],
                 stops: [0.12, 0.42, 0.72, 1.0],
               ),
             ),

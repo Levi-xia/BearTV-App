@@ -47,7 +47,8 @@ void main() {
   /// (which keeps itself open by design, firing no `setState`) it kept showing
   /// whatever was playing when the layer mounted, and only caught up when the
   /// overlay was closed. It must track `iptv` on its own.
-  testWidgets('fullscreen channel name follows a channel change with the '
+  testWidgets(
+      'fullscreen channel name follows a channel change with the '
       'picker open', (tester) async {
     final app = AppController(player: MockPlayerController());
     addTearDown(app.dispose);

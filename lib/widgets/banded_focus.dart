@@ -80,10 +80,10 @@ class BandedTraversalPolicy extends FocusTraversalPolicy {
     if (candidates.isEmpty) return false;
     requestFocusCallback(
       candidates.first,
-      alignmentPolicy:
-          direction == TraversalDirection.up || direction == TraversalDirection.left
-              ? ScrollPositionAlignmentPolicy.keepVisibleAtStart
-              : ScrollPositionAlignmentPolicy.keepVisibleAtEnd,
+      alignmentPolicy: direction == TraversalDirection.up ||
+              direction == TraversalDirection.left
+          ? ScrollPositionAlignmentPolicy.keepVisibleAtStart
+          : ScrollPositionAlignmentPolicy.keepVisibleAtEnd,
     );
     return true;
   }
@@ -97,8 +97,8 @@ class BandedTraversalPolicy extends FocusTraversalPolicy {
 
     final sameLane = <FocusNode>[];
     final anywhere = <FocusNode>[];
-    for (final node in from.nearestScope?.traversalDescendants ??
-        const <FocusNode>[]) {
+    for (final node
+        in from.nearestScope?.traversalDescendants ?? const <FocusNode>[]) {
       if (node == from) continue;
       final Rect rect = node.rect;
       if (rect.isEmpty) continue; // laid out but zero-sized (collapsed row)
@@ -131,7 +131,9 @@ class BandedTraversalPolicy extends FocusTraversalPolicy {
     final sorted = pool.toList()
       ..sort((a, b) {
         final byGap = gapTo(a).compareTo(gapTo(b));
-        return byGap != 0 ? byGap : a.rect.center.dx.compareTo(b.rect.center.dx);
+        return byGap != 0
+            ? byGap
+            : a.rect.center.dx.compareTo(b.rect.center.dx);
       });
 
     // The nearest element anchors the row; anything sharing its vertical band
@@ -155,8 +157,8 @@ class BandedTraversalPolicy extends FocusTraversalPolicy {
     }
     final row = sameRow.isNotEmpty ? sameRow : rest;
     row.sort((a, b) {
-      final byX = _horizontalGap(from, a.rect)
-          .compareTo(_horizontalGap(from, b.rect));
+      final byX =
+          _horizontalGap(from, a.rect).compareTo(_horizontalGap(from, b.rect));
       if (byX != 0) return byX;
       return _verticalGap(from, a.rect).compareTo(_verticalGap(from, b.rect));
     });

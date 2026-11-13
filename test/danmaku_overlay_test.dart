@@ -165,7 +165,8 @@ void main() {
     // cleared and the cursor re-seeked, so they died about a quarter of the way
     // across and popped back in from the right edge. They must now fly to the
     // end of their traversal untouched.
-    expect(seen, everyElement(3), reason: 'comments were wiped mid-flight: $seen');
+    expect(seen, everyElement(3),
+        reason: 'comments were wiped mid-flight: $seen');
   });
 
   testWidgets('a real seek still clears and re-seeks the stream',

@@ -107,9 +107,8 @@ class DanmakuMatch {
   });
 
   /// Human label for the picker list: `番名 · 分集`.
-  String get label => [animeTitle, episodeTitle]
-      .where((s) => s.trim().isNotEmpty)
-      .join(' · ');
+  String get label =>
+      [animeTitle, episodeTitle].where((s) => s.trim().isNotEmpty).join(' · ');
 }
 
 /// User-tunable rendering config, persisted in [SettingsStore]. All fields have

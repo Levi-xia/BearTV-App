@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:flutter/foundation.dart';
 import 'package:video_player/video_player.dart';
 
@@ -31,10 +33,7 @@ class VideoAdapter extends ChangeNotifier implements PlayerController {
     notifyListeners();
     if (url == null || url.isEmpty) return;
 
-    final vp = VideoPlayerController.networkUrl(
-      Uri.parse(url),
-      httpHeaders: headers ?? const {},
-    );
+    final vp = _controllerFor(url, headers);
     try {
       await vp.initialize();
       if (token != _openToken) {
@@ -53,6 +52,24 @@ class VideoAdapter extends ChangeNotifier implements PlayerController {
         notifyListeners();
       }
     }
+  }
+
+  /// `file:` URLs (downloaded HLS / mp4) use the local-file backend; the
+  /// fvp/libmdk player explicitly allows the `file` protocol for local m3u8.
+  /// Everything else stays on the network backend.
+  VideoPlayerController _controllerFor(
+      String url, Map<String, String>? headers) {
+    final uri = Uri.tryParse(url);
+    if (uri != null && uri.scheme == 'file') {
+      return VideoPlayerController.file(File.fromUri(uri));
+    }
+    if (uri != null && uri.scheme.isEmpty && uri.path.startsWith('/')) {
+      return VideoPlayerController.file(File(uri.path));
+    }
+    return VideoPlayerController.networkUrl(
+      Uri.parse(url),
+      httpHeaders: headers ?? const {},
+    );
   }
 
   void _onVp() => _sync();

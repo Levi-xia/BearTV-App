@@ -28,7 +28,8 @@ class TmdbApi {
   static const _timeout = Duration(seconds: 8);
   static const _maxRetries = 2;
 
-  Future<Map<String, dynamic>> _get(String path, [Map<String, String>? query]) async {
+  Future<Map<String, dynamic>> _get(String path,
+      [Map<String, String>? query]) async {
     final uri = Uri.parse('$_base$path').replace(queryParameters: {
       'api_key': _apiKey,
       'language': 'zh-CN',
@@ -39,7 +40,8 @@ class TmdbApi {
     Object? lastErr;
     for (var attempt = 0; attempt <= _maxRetries; attempt++) {
       if (attempt > 0) {
-        await Future<void>.delayed(Duration(milliseconds: 300 * (1 << (attempt - 1))));
+        await Future<void>.delayed(
+            Duration(milliseconds: 300 * (1 << (attempt - 1))));
       }
       try {
         final res = await _client.get(uri).timeout(_timeout);
@@ -50,7 +52,8 @@ class TmdbApi {
         if (res.statusCode >= 400 && res.statusCode < 500) {
           throw TmdbException('HTTP ${res.statusCode}', status: res.statusCode);
         }
-        lastErr = TmdbException('HTTP ${res.statusCode}', status: res.statusCode);
+        lastErr =
+            TmdbException('HTTP ${res.statusCode}', status: res.statusCode);
       } on TmdbException {
         rethrow;
       } catch (e) {

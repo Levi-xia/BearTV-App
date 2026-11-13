@@ -59,7 +59,9 @@ VodItem? mapTmdbItem(
     neu: _isRecent(date),
     bgUrl: _img(backdrop, 'w1280'),
     // Landscape card: prefer backdrop, fall back to poster so it never blanks.
-    cardUrl: backdrop != null && backdrop.isNotEmpty ? _img(backdrop, 'w780') : poster,
+    cardUrl: backdrop != null && backdrop.isNotEmpty
+        ? _img(backdrop, 'w780')
+        : poster,
     posterUrl: poster.isNotEmpty ? poster : _img(backdrop, 'w780'),
   );
 }

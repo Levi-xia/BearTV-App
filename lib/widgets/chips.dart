@@ -142,50 +142,87 @@ class ActionButton extends StatelessWidget {
   }
 }
 
-/// Episode cell in the 选集 grid (`.ep`), with a `current` playing state.
+/// Episode cell in the 选集 grid (`.ep`), with a `current` playing state and
+/// optional download [selected] / [badge] (e.g. 「✓ 已缓存」「下载中」).
+///
+/// [disabled] greys the cell out (already cached / already in the queue) while
+/// keeping its [badge] readable — the download sheet uses it so a cached
+/// episode can't be added twice.
 class EpisodeCell extends StatelessWidget {
   const EpisodeCell({
     super.key,
     required this.label,
     required this.current,
     required this.onPressed,
+    this.selected = false,
+    this.badge,
+    this.disabled = false,
+    this.focusNode,
+    this.autofocus = false,
   });
 
   final String label;
   final bool current;
   final VoidCallback onPressed;
+  final bool selected;
+
+  /// Small trailing status label shown instead of the ▶ marker.
+  final String? badge;
+
+  /// Dimmed style; the press handler is still wired so focus never lands on a
+  /// non-interactive target, but the caller's handler typically does nothing.
+  final bool disabled;
+
+  final FocusNode? focusNode;
+  final bool autofocus;
 
   @override
   Widget build(BuildContext context) {
     return Focusable(
       onPressed: onPressed,
+      autofocus: autofocus,
+      focusNode: focusNode,
       ensureVisibleAlignment: 0.5,
       builder: (context, focused) {
+        final highlighted = !disabled && (selected || current);
         final base = BoxDecoration(
-          color: current ? const Color(0x1F00E5FF) : AppColors.glass,
+          color: highlighted ? const Color(0x1F00E5FF) : AppColors.glass,
           borderRadius: BorderRadius.circular(13),
           border: Border.all(
-            color: current ? const Color(0x8C00E5FF) : AppColors.hairline,
+            color: highlighted ? const Color(0x8C00E5FF) : AppColors.hairline,
+            width: selected ? 2 : 1,
           ),
         );
-        return FocusFx.scale(
-          focused,
-          Container(
-            padding: const EdgeInsets.symmetric(vertical: 16),
-            alignment: Alignment.center,
-            decoration: focused ? FocusFx.pill(focused, radius: 13) : base,
-            child: Text(
-              current ? '$label ▶' : label,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              textAlign: TextAlign.center,
-              style: TextStyle(
-                fontSize: 17,
-                color: focused
-                    ? AppColors.focusInk
-                    : (current ? AppColors.text : const Color(0xFFCDDBEF)),
-                fontWeight: focused ? FontWeight.w700 : FontWeight.w400,
-                fontFamilyFallback: kFontFallback,
+        final suffix = (badge != null && badge!.isNotEmpty)
+            ? ' ${badge!}'
+            : (!disabled && current ? ' ▶' : '');
+        final Color idleColor;
+        if (disabled) {
+          idleColor = const Color(0x66CDDBEF);
+        } else if (highlighted) {
+          idleColor = AppColors.text;
+        } else {
+          idleColor = const Color(0xFFCDDBEF);
+        }
+        return Opacity(
+          opacity: disabled ? 0.55 : 1,
+          child: FocusFx.scale(
+            focused,
+            Container(
+              padding: const EdgeInsets.symmetric(vertical: 16),
+              alignment: Alignment.center,
+              decoration: focused ? FocusFx.pill(focused, radius: 13) : base,
+              child: Text(
+                '$label$suffix',
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                textAlign: TextAlign.center,
+                style: TextStyle(
+                  fontSize: 17,
+                  color: focused ? AppColors.focusInk : idleColor,
+                  fontWeight: focused ? FontWeight.w700 : FontWeight.w400,
+                  fontFamilyFallback: kFontFallback,
+                ),
               ),
             ),
           ),

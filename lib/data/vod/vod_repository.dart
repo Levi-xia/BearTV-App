@@ -207,8 +207,8 @@ class VodRepository {
     final query = title.trim();
     if (query.isEmpty || sites.isEmpty) return const [];
 
-    final options =
-        await Future.wait(sites.map((site) => _candidateFor(site, query, current)));
+    final options = await Future.wait(
+        sites.map((site) => _candidateFor(site, query, current)));
     final list = options.whereType<ResourceOption>().toList();
     list.sort((a, b) {
       if (a.isCurrent != b.isCurrent) return a.isCurrent ? -1 : 1;
@@ -256,7 +256,8 @@ class VodRepository {
 
   /// Fetch a specific source's detail (used when the user picks a switch option
   /// that wasn't pre-resolved).
-  Future<VodDetail?> detail(CmsSite site, String vodId) => _detailOf(site, vodId);
+  Future<VodDetail?> detail(CmsSite site, String vodId) =>
+      _detailOf(site, vodId);
 }
 
 /// One memoized in-flight/complete request plus when it was issued.

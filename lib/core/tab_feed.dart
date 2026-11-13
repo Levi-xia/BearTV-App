@@ -15,8 +15,10 @@ class TabFeed {
   List<VodItem> hero = const [];
   String? heroBgUrl;
 
-  final ValueNotifier<List<VodItem>> library = ValueNotifier<List<VodItem>>(const []);
-  final ValueNotifier<FeedStatus> status = ValueNotifier<FeedStatus>(FeedStatus.idle);
+  final ValueNotifier<List<VodItem>> library =
+      ValueNotifier<List<VodItem>>(const []);
+  final ValueNotifier<FeedStatus> status =
+      ValueNotifier<FeedStatus>(FeedStatus.idle);
 
   int page = 0;
   bool hasMore = true;

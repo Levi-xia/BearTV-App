@@ -60,19 +60,18 @@ extension LiveVerdictX on LiveVerdict {
       };
 }
 
-final RegExp _extM3u = RegExp(r'^#EXTM3U', caseSensitive: false, multiLine: true);
+final RegExp _extM3u =
+    RegExp(r'^#EXTM3U', caseSensitive: false, multiLine: true);
 final RegExp _endList =
     RegExp(r'^#EXT-X-ENDLIST', caseSensitive: false, multiLine: true);
-final RegExp _vodType =
-    RegExp(r'^#EXT-X-PLAYLIST-TYPE:\s*VOD', caseSensitive: false, multiLine: true);
-final RegExp _mediaSeq =
-    RegExp(r'^#EXT-X-MEDIA-SEQUENCE:\s*(\d+)', caseSensitive: false, multiLine: true);
-final RegExp _targetDur =
-    RegExp(r'^#EXT-X-TARGETDURATION:\s*(\d+)', caseSensitive: false, multiLine: true);
-final RegExp _progDateTime = RegExp(
-    r'^#EXT-X-PROGRAM-DATE-TIME:\s*(\S+)',
-    caseSensitive: false,
-    multiLine: true);
+final RegExp _vodType = RegExp(r'^#EXT-X-PLAYLIST-TYPE:\s*VOD',
+    caseSensitive: false, multiLine: true);
+final RegExp _mediaSeq = RegExp(r'^#EXT-X-MEDIA-SEQUENCE:\s*(\d+)',
+    caseSensitive: false, multiLine: true);
+final RegExp _targetDur = RegExp(r'^#EXT-X-TARGETDURATION:\s*(\d+)',
+    caseSensitive: false, multiLine: true);
+final RegExp _progDateTime = RegExp(r'^#EXT-X-PROGRAM-DATE-TIME:\s*(\S+)',
+    caseSensitive: false, multiLine: true);
 
 /// The handful of facts we need from one manifest fetch. Everything else in a
 /// (possibly 200KB / 2000-segment) playlist is discarded immediately — only one
@@ -273,9 +272,25 @@ const ManifestInfo notAPlaylist = ManifestInfo(isPlaylist: false, isVod: false);
 /// `.ts` is deliberately absent: it is as much a live-transport stream as a
 /// recording, and the fetch settles it either way.
 const Set<String> _staticMediaExtensions = {
-  'mp4', 'm4v', 'mkv', 'avi', 'mov', 'wmv', 'webm', 'flv', 'mpg', 'mpeg',
-  'rmvb', '3gp', 'ogv',
-  'mp3', 'm4a', 'aac', 'flac', 'wav', 'ogg',
+  'mp4',
+  'm4v',
+  'mkv',
+  'avi',
+  'mov',
+  'wmv',
+  'webm',
+  'flv',
+  'mpg',
+  'mpeg',
+  'rmvb',
+  '3gp',
+  'ogv',
+  'mp3',
+  'm4a',
+  'aac',
+  'flac',
+  'wav',
+  'ogg',
 };
 
 /// Whether [url] names a static media file rather than a stream manifest.

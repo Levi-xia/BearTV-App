@@ -1138,11 +1138,17 @@ class _CmsResultCard extends StatelessWidget {
             color: AppColors.cardBg,
             borderRadius: BorderRadius.circular(18),
             border: Border.all(
-              color: focused ? const Color(0xE6FFFFFF) : const Color(0x12FFFFFF),
+              color:
+                  focused ? const Color(0xE6FFFFFF) : const Color(0x12FFFFFF),
               width: focused ? 3 : 1,
             ),
             boxShadow: focused
-                ? const [BoxShadow(color: Color(0x804EA8FF), blurRadius: 40, offset: Offset(0, 16))]
+                ? const [
+                    BoxShadow(
+                        color: Color(0x804EA8FF),
+                        blurRadius: 40,
+                        offset: Offset(0, 16))
+                  ]
                 : null,
           ),
           child: ClipRRect(
@@ -1156,7 +1162,11 @@ class _CmsResultCard extends StatelessWidget {
                     gradient: LinearGradient(
                       begin: Alignment.bottomCenter,
                       end: Alignment.topCenter,
-                      colors: [Color(0xEB03060E), Color(0x1A03060E), Color(0x0003060E)],
+                      colors: [
+                        Color(0xEB03060E),
+                        Color(0x1A03060E),
+                        Color(0x0003060E)
+                      ],
                       stops: [0.0, 0.55, 1.0],
                     ),
                   ),
@@ -1168,7 +1178,8 @@ class _CmsResultCard extends StatelessWidget {
                   left: 10,
                   top: 10,
                   child: Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
                     decoration: BoxDecoration(
                       color: const Color(0xCC0A1830),
                       borderRadius: BorderRadius.circular(8),
@@ -1209,7 +1220,10 @@ class _CmsResultCard extends StatelessWidget {
                       if (hit.remarks.isNotEmpty || hit.year.isNotEmpty) ...[
                         const SizedBox(height: 2),
                         Text(
-                          [if (hit.year.isNotEmpty) hit.year, if (hit.remarks.isNotEmpty) hit.remarks].join(' · '),
+                          [
+                            if (hit.year.isNotEmpty) hit.year,
+                            if (hit.remarks.isNotEmpty) hit.remarks
+                          ].join(' · '),
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
                           style: const TextStyle(

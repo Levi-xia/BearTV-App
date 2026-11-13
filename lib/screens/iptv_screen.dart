@@ -124,8 +124,7 @@ class _LiveStage extends StatelessWidget {
                     color: const Color(0xFF05070E),
                     borderRadius: BorderRadius.circular(16),
                     border: Border.all(
-                      color:
-                          focused ? AppColors.accent2 : AppColors.hairline,
+                      color: focused ? AppColors.accent2 : AppColors.hairline,
                       width: focused ? 2.5 : 1,
                     ),
                   ),
@@ -594,7 +593,8 @@ class _ChannelListState extends State<_ChannelList> {
                   children: [
                     for (var i = 0; i < groups.length; i++)
                       _GroupItem(
-                        label: '${groups[i]} (${grouped[groups[i]]?.length ?? 0})',
+                        label:
+                            '${groups[i]} (${grouped[groups[i]]?.length ?? 0})',
                         selected: groups[i] == active,
                         focusNode: _groupNode(i),
                         // Focus selects the group so the right column follows the
@@ -1058,8 +1058,8 @@ class _LiveFullscreenState extends State<_LiveFullscreen> {
             if (_osd != null)
               Center(
                 child: Container(
-                  padding: const EdgeInsets.symmetric(
-                      horizontal: 26, vertical: 16),
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 26, vertical: 16),
                   decoration: BoxDecoration(
                     color: const Color(0x99000000),
                     borderRadius: BorderRadius.circular(16),
@@ -1249,8 +1249,3 @@ class _SourceRow extends StatelessWidget {
     );
   }
 }
-
-
-
-
-

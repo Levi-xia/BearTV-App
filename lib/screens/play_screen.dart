@@ -2,7 +2,6 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:flutter/widgets.dart';
 import 'package:video_player/video_player.dart';
 
 import '../core/app_controller.dart';
@@ -15,9 +14,11 @@ import '../player/player_controller.dart';
 import '../player/video_adapter.dart';
 import '../widgets/chips.dart';
 import '../widgets/danmaku_overlay.dart';
+import '../widgets/episode_pager.dart';
 import '../widgets/focusable.dart';
 import '../widgets/net_image.dart';
 import '../widgets/on_screen_keyboard.dart';
+import 'download_sheet.dart';
 
 String _fmt(Duration d) {
   final h = d.inHours.toString().padLeft(2, '0');
@@ -45,16 +46,42 @@ class _PlayScreenState extends State<PlayScreen> {
   // goes fullscreen — rather than drifting onto a side-panel control.
   final FocusNode _playerNode = FocusNode(debugLabel: 'playPlayerSurface');
 
+  // 下载选集 sheet, opened from the side panel. Back closes it first.
+  bool _downloadOpen = false;
+  late final AppController _app;
+  late final bool Function() _downloadBackInterceptor;
+
   @override
   void initState() {
     super.initState();
+    _app = AppScope.read(context);
+    _downloadBackInterceptor = () {
+      if (!_downloadOpen) return false;
+      _closeDownloadSheet();
+      return true;
+    };
+    _app.playOverlayBackInterceptor = _downloadBackInterceptor;
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted) _playerNode.requestFocus();
     });
   }
 
+  void _openDownloadSheet() {
+    if (_downloadOpen) return;
+    setState(() => _downloadOpen = true);
+  }
+
+  void _closeDownloadSheet() {
+    if (!_downloadOpen) return;
+    setState(() => _downloadOpen = false);
+    _playerNode.requestFocus();
+  }
+
   @override
   void dispose() {
+    if (_app.playOverlayBackInterceptor == _downloadBackInterceptor) {
+      _app.playOverlayBackInterceptor = null;
+    }
     _panelNode.dispose();
     _playerNode.dispose();
     super.dispose();
@@ -68,35 +95,53 @@ class _PlayScreenState extends State<PlayScreen> {
 
     if (app.fullscreen) return const _FullscreenPlayer();
 
-    return DecoratedBox(
-      decoration: const BoxDecoration(
-        gradient: LinearGradient(
-          begin: Alignment.topLeft,
-          end: Alignment.bottomRight,
-          colors: [Color(0xFF060A14), Color(0xFF0A1020), Color(0xFF060810)],
-          stops: [0.0, 0.5, 1.0],
-        ),
-      ),
-      child: SingleChildScrollView(
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Padding(
-              padding: const EdgeInsets.fromLTRB(AppDims.pad, 176, AppDims.pad, 56),
-              child: Row(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Expanded(child: AspectRatio(aspectRatio: 16 / 9, child: _Player(playerNode: _playerNode, panelNode: _panelNode))),
-                  const SizedBox(width: 30),
-                  SizedBox(width: AppDims.sideW, child: _SidePanel(panelNode: _panelNode)),
-                ],
-              ),
+    return Stack(
+      fit: StackFit.expand,
+      children: [
+        DecoratedBox(
+          decoration: const BoxDecoration(
+            gradient: LinearGradient(
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
+              colors: [Color(0xFF060A14), Color(0xFF0A1020), Color(0xFF060810)],
+              stops: [0.0, 0.5, 1.0],
             ),
-            const _Episodes(),
-            const SizedBox(height: 80),
-          ],
+          ),
+          child: SingleChildScrollView(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(
+                      AppDims.pad, 176, AppDims.pad, 56),
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Expanded(
+                          child: AspectRatio(
+                              aspectRatio: 16 / 9,
+                              child: _Player(
+                                  playerNode: _playerNode,
+                                  panelNode: _panelNode))),
+                      const SizedBox(width: 30),
+                      SizedBox(
+                        width: AppDims.sideW,
+                        child: _SidePanel(
+                          panelNode: _panelNode,
+                          onOpenDownloads: _openDownloadSheet,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                const _Episodes(),
+                const SizedBox(height: 80),
+              ],
+            ),
+          ),
         ),
-      ),
+        if (_downloadOpen) DownloadSheet(onClose: _closeDownloadSheet),
+      ],
     );
   }
 }
@@ -133,12 +178,15 @@ class _VideoSurface extends StatelessWidget {
       valueListenable: p,
       builder: (context, v, _) {
         final raw = p.raw;
-        if (!v.ready || raw == null || !raw.value.isInitialized) return poster();
+        if (!v.ready || raw == null || !raw.value.isInitialized) {
+          return poster();
+        }
         return ColoredBox(
           color: const Color(0xFF000000),
           child: Center(
             child: AspectRatio(
-              aspectRatio: raw.value.aspectRatio == 0 ? 16 / 9 : raw.value.aspectRatio,
+              aspectRatio:
+                  raw.value.aspectRatio == 0 ? 16 / 9 : raw.value.aspectRatio,
               child: VideoPlayer(raw),
             ),
           ),
@@ -159,7 +207,8 @@ class _Player extends StatelessWidget {
     return Focusable(
       focusNode: playerNode,
       autofocus: true,
-      ensureVisibleAlignment: 0.5, // keep the player clear of the top header on scroll-up
+      ensureVisibleAlignment:
+          0.5, // keep the player clear of the top header on scroll-up
       onPressed: () => app.setFullscreen(true), // OK on player → fullscreen
       onKeyEvent: (node, event) {
         // Right off the player → 播放设置 side panel (not the header search).
@@ -182,8 +231,12 @@ class _Player extends StatelessWidget {
               width: focused ? 3 : 1,
             ),
             boxShadow: [
-              const BoxShadow(color: Color(0x99000000), blurRadius: 80, offset: Offset(0, 34)),
-              if (focused) const BoxShadow(color: Color(0x5900E5FF), blurRadius: 60),
+              const BoxShadow(
+                  color: Color(0x99000000),
+                  blurRadius: 80,
+                  offset: Offset(0, 34)),
+              if (focused)
+                const BoxShadow(color: Color(0x5900E5FF), blurRadius: 60),
             ],
           ),
           child: ClipRRect(
@@ -195,6 +248,7 @@ class _Player extends StatelessWidget {
                 _DanmakuLayer(),
                 _StatusOverlay(),
                 _PlayStateBadge(),
+                _CacheBadge(),
                 _PlayerControls(),
               ],
             ),
@@ -230,11 +284,16 @@ class _CenterNote extends StatelessWidget {
       child: Text(
         text,
         textAlign: TextAlign.center,
-        style: const TextStyle(fontSize: 18, height: 1.5, color: AppColors.text, fontFamilyFallback: kFontFallback),
+        style: const TextStyle(
+            fontSize: 18,
+            height: 1.5,
+            color: AppColors.text,
+            fontFamilyFallback: kFontFallback),
       ),
     );
   }
 }
+
 /// Centered playback-state badge (purely visual — focus stays on the player so
 /// OK still toggles play / fullscreen). Shows an unambiguous pause glyph +
 /// 「已暂停」 while genuinely paused; while the stream is still opening or
@@ -255,7 +314,10 @@ class _PlayStateBadge extends StatelessWidget {
         if (v.buffering || !v.ready) {
           return const Center(
             child: Text('缓冲中…',
-                style: TextStyle(fontSize: 16, color: AppColors.textDim, fontFamilyFallback: kFontFallback)),
+                style: TextStyle(
+                    fontSize: 16,
+                    color: AppColors.textDim,
+                    fontFamilyFallback: kFontFallback)),
           );
         }
         return Center(
@@ -271,11 +333,13 @@ class _PlayStateBadge extends StatelessWidget {
                   shape: BoxShape.circle,
                   border: Border.all(color: const Color(0x80FFFFFF), width: 2),
                 ),
-                child: const Icon(Icons.pause_rounded, size: 54, color: AppColors.text),
+                child: const Icon(Icons.pause_rounded,
+                    size: 54, color: AppColors.text),
               ),
               const SizedBox(height: 14),
               Container(
-                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 5),
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 14, vertical: 5),
                 decoration: BoxDecoration(
                   color: const Color(0x59000000),
                   borderRadius: BorderRadius.circular(8),
@@ -291,6 +355,43 @@ class _PlayStateBadge extends StatelessWidget {
           ),
         );
       },
+    );
+  }
+}
+
+/// Top-left pill shown while the player is reading a downloaded file. Purely
+/// informational; focus stays on the player.
+class _CacheBadge extends StatelessWidget {
+  const _CacheBadge();
+
+  @override
+  Widget build(BuildContext context) {
+    final app = AppScope.of(context);
+    if (!app.playingFromCache) return const SizedBox.shrink();
+    return Positioned(
+      top: 16,
+      left: 16,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 13, vertical: 7),
+        decoration: BoxDecoration(
+          color: const Color(0x99000000),
+          borderRadius: BorderRadius.circular(999),
+          border: Border.all(color: const Color(0x5548E08A)),
+        ),
+        child: const Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(Icons.offline_pin_rounded, size: 17, color: AppColors.live),
+            SizedBox(width: 7),
+            Text('正在播放缓存内容',
+                style: TextStyle(
+                    fontSize: 15,
+                    fontWeight: FontWeight.w600,
+                    color: AppColors.text,
+                    fontFamilyFallback: kFontFallback)),
+          ],
+        ),
+      ),
     );
   }
 }
@@ -316,7 +417,11 @@ class _PlayerControls extends StatelessWidget {
             : '';
         final srcName = app.currentDetail?.sourceName ?? '';
         final speedLabel = v.speed == 1.0 ? '' : ' · ${v.speed}x';
-        final label = [srcName, epTitle].where((s) => s.isNotEmpty).join(' · ') + speedLabel;
+        final cacheLabel = app.playingFromCache ? ' · 缓存' : '';
+        final label =
+            [srcName, epTitle].where((s) => s.isNotEmpty).join(' · ') +
+                speedLabel +
+                cacheLabel;
         return Positioned(
           left: 0,
           right: 0,
@@ -327,6 +432,7 @@ class _PlayerControls extends StatelessWidget {
     );
   }
 }
+
 class _ControlsBody extends StatelessWidget {
   const _ControlsBody({required this.value, required this.label});
   final PlayerValue value;
@@ -354,10 +460,14 @@ class _ControlsBody extends StatelessWidget {
                 label,
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
-                style: const TextStyle(fontSize: 15, color: AppColors.textDim, fontFamilyFallback: kFontFallback),
+                style: const TextStyle(
+                    fontSize: 15,
+                    color: AppColors.textDim,
+                    fontFamilyFallback: kFontFallback),
               ),
             ),
-          _ProgressBar(progress: value.progress, buffered: value.bufferedProgress),
+          _ProgressBar(
+              progress: value.progress, buffered: value.bufferedProgress),
           const SizedBox(height: 8),
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
@@ -372,7 +482,8 @@ class _ControlsBody extends StatelessWidget {
   }
 }
 
-const _timeStyle = TextStyle(fontSize: 14, color: AppColors.text, fontFamilyFallback: kFontFallback);
+const _timeStyle = TextStyle(
+    fontSize: 14, color: AppColors.text, fontFamilyFallback: kFontFallback);
 
 /// Thin rounded track with a gradient fill (`.bar`), plus a lighter "buffered"
 /// (白条) layer showing how far ahead the stream is cached.
@@ -407,11 +518,13 @@ class _ProgressBar extends StatelessWidget {
     );
   }
 }
+
 /// Right-hand detail + controls column. Renders safely while a resource is
 /// still being resolved (`currentDetail == null`).
 class _SidePanel extends StatelessWidget {
-  const _SidePanel({required this.panelNode});
+  const _SidePanel({required this.panelNode, required this.onOpenDownloads});
   final FocusNode panelNode;
+  final VoidCallback onOpenDownloads;
 
   @override
   Widget build(BuildContext context) {
@@ -419,7 +532,8 @@ class _SidePanel extends StatelessWidget {
     final item = app.currentItem;
     if (item == null) return const SizedBox.shrink();
     final detail = app.currentDetail;
-    final desc = (detail != null && detail.desc.isNotEmpty) ? detail.desc : item.desc;
+    final desc =
+        (detail != null && detail.desc.isNotEmpty) ? detail.desc : item.desc;
 
     // Route the player's Right key onto the topmost control that's actually
     // rendered: 线路 → 切换资源 → 倍速 (倍速 is always present as a fallback).
@@ -447,7 +561,10 @@ class _SidePanel extends StatelessWidget {
             item.en,
             maxLines: 1,
             overflow: TextOverflow.ellipsis,
-            style: const TextStyle(fontSize: 15, color: AppColors.textDim, fontFamilyFallback: kFontFallback),
+            style: const TextStyle(
+                fontSize: 15,
+                color: AppColors.textDim,
+                fontFamilyFallback: kFontFallback),
           ),
         ],
         const SizedBox(height: 10),
@@ -458,7 +575,11 @@ class _SidePanel extends StatelessWidget {
             desc,
             maxLines: 4,
             overflow: TextOverflow.ellipsis,
-            style: const TextStyle(fontSize: 15, height: 1.6, color: Color(0xFFC5D2E6), fontFamilyFallback: kFontFallback),
+            style: const TextStyle(
+                fontSize: 15,
+                height: 1.6,
+                color: Color(0xFFC5D2E6),
+                fontFamilyFallback: kFontFallback),
           ),
         ],
         const _Hr(),
@@ -480,14 +601,61 @@ class _SidePanel extends StatelessWidget {
           ),
           const SizedBox(height: 18),
         ],
-        _SwitchResourceSection(firstNode: (!hasLines && hasOptions) ? panelNode : null),
-        _SpeedSection(firstNode: (!hasLines && !hasOptions) ? panelNode : null),
+        _SwitchResourceSection(
+            firstNode: (!hasLines && hasOptions) ? panelNode : null),
+        _DownloadSection(
+          firstNode: (!hasLines && !hasOptions) ? panelNode : null,
+          onOpen: onOpenDownloads,
+        ),
+        const _SpeedSection(),
         const _SkipSection(),
         const _DanmakuSection(),
       ],
     );
   }
 }
+
+/// 下载 entry: queue episodes of the current line, or jump to 下载管理. When the
+/// episode on screen is already cached the chip says so (it still opens the
+/// sheet, so the user can download more episodes).
+class _DownloadSection extends StatelessWidget {
+  const _DownloadSection({this.firstNode, required this.onOpen});
+
+  final FocusNode? firstNode;
+  final VoidCallback onOpen;
+
+  @override
+  Widget build(BuildContext context) {
+    final app = AppScope.of(context);
+    final cached = app.currentEpisodeCached;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const _Label('下载'),
+        const SizedBox(height: 10),
+        Wrap(
+          spacing: 10,
+          runSpacing: 10,
+          children: [
+            SelectableChip(
+              label: cached ? '已缓存 · 下载其他集' : '下载选集',
+              selected: cached,
+              focusNode: firstNode,
+              onPressed: onOpen,
+            ),
+            SelectableChip(
+              label: '下载管理',
+              selected: false,
+              onPressed: app.openDownloads,
+            ),
+          ],
+        ),
+        const SizedBox(height: 18),
+      ],
+    );
+  }
+}
+
 class _ScoreRow extends StatelessWidget {
   const _ScoreRow({required this.item});
   final dynamic item;
@@ -500,7 +668,12 @@ class _ScoreRow extends StatelessWidget {
     ].join(' · ');
     return Row(
       children: [
-        Text('★ ${item.score}', style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w700, color: AppColors.gold, fontFamilyFallback: kFontFallback)),
+        Text('★ ${item.score}',
+            style: const TextStyle(
+                fontSize: 16,
+                fontWeight: FontWeight.w700,
+                color: AppColors.gold,
+                fontFamilyFallback: kFontFallback)),
         if (meta.isNotEmpty) ...[
           const SizedBox(width: 12),
           Flexible(
@@ -508,7 +681,10 @@ class _ScoreRow extends StatelessWidget {
               meta,
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
-              style: const TextStyle(fontSize: 15, color: AppColors.textDim, fontFamilyFallback: kFontFallback),
+              style: const TextStyle(
+                  fontSize: 15,
+                  color: AppColors.textDim,
+                  fontFamilyFallback: kFontFallback),
             ),
           ),
         ],
@@ -523,7 +699,11 @@ class _Label extends StatelessWidget {
   @override
   Widget build(BuildContext context) => Text(
         text,
-        style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w700, color: AppColors.text, fontFamilyFallback: kFontFallback),
+        style: const TextStyle(
+            fontSize: 18,
+            fontWeight: FontWeight.w700,
+            color: AppColors.text,
+            fontFamilyFallback: kFontFallback),
       );
 }
 
@@ -538,6 +718,7 @@ class _Hr extends StatelessWidget {
         ),
       );
 }
+
 /// 切换资源: cross-source candidates. Hidden until at least one is found.
 class _SwitchResourceSection extends StatelessWidget {
   const _SwitchResourceSection({this.firstNode});
@@ -552,7 +733,10 @@ class _SwitchResourceSection extends StatelessWidget {
         return const Padding(
           padding: EdgeInsets.only(bottom: 18),
           child: Text('正在查找其他资源…',
-              style: TextStyle(fontSize: 14, color: AppColors.textDim, fontFamilyFallback: kFontFallback)),
+              style: TextStyle(
+                  fontSize: 14,
+                  color: AppColors.textDim,
+                  fontFamilyFallback: kFontFallback)),
         );
       }
       return const SizedBox.shrink();
@@ -566,7 +750,11 @@ class _SwitchResourceSection extends StatelessWidget {
             const _Label('切换资源'),
             const SizedBox(width: 10),
             if (app.loadingResources)
-              const Text('查找中…', style: TextStyle(fontSize: 13, color: AppColors.textDim, fontFamilyFallback: kFontFallback)),
+              const Text('查找中…',
+                  style: TextStyle(
+                      fontSize: 13,
+                      color: AppColors.textDim,
+                      fontFamilyFallback: kFontFallback)),
           ],
         ),
         const SizedBox(height: 10),
@@ -576,7 +764,9 @@ class _SwitchResourceSection extends StatelessWidget {
           children: [
             for (var i = 0; i < opts.length; i++)
               SelectableChip(
-                label: opts[i].episodeCount > 0 ? '${opts[i].sourceName} · ${opts[i].episodeCount}集' : opts[i].sourceName,
+                label: opts[i].episodeCount > 0
+                    ? '${opts[i].sourceName} · ${opts[i].episodeCount}集'
+                    : opts[i].sourceName,
                 selected: opts[i].isCurrent,
                 focusNode: i == 0 ? firstNode : null,
                 onPressed: () => app.switchResource(opts[i]),
@@ -591,8 +781,7 @@ class _SwitchResourceSection extends StatelessWidget {
 
 /// 倍速 chips.
 class _SpeedSection extends StatelessWidget {
-  const _SpeedSection({this.firstNode});
-  final FocusNode? firstNode;
+  const _SpeedSection();
 
   @override
   Widget build(BuildContext context) {
@@ -609,9 +798,9 @@ class _SpeedSection extends StatelessWidget {
           children: [
             for (var i = 0; i < kPlaybackRates.length; i++)
               SelectableChip(
-                label: kPlaybackRates[i] == 1.0 ? '1.0x' : '${kPlaybackRates[i]}x',
+                label:
+                    kPlaybackRates[i] == 1.0 ? '1.0x' : '${kPlaybackRates[i]}x',
                 selected: app.speed == kPlaybackRates[i],
-                focusNode: i == 0 ? firstNode : null,
                 onPressed: () => app.setSpeed(kPlaybackRates[i]),
               ),
           ],
@@ -621,6 +810,7 @@ class _SpeedSection extends StatelessWidget {
     );
   }
 }
+
 /// 片头片尾跳过: on/off chip + intro/ending second steppers.
 class _SkipSection extends StatelessWidget {
   const _SkipSection();
@@ -660,7 +850,8 @@ class _SkipSection extends StatelessWidget {
 }
 
 class _Stepper extends StatelessWidget {
-  const _Stepper({required this.label, required this.seconds, required this.onDelta});
+  const _Stepper(
+      {required this.label, required this.seconds, required this.onDelta});
   final String label;
   final int seconds;
   final void Function(int delta) onDelta;
@@ -671,22 +862,32 @@ class _Stepper extends StatelessWidget {
       children: [
         SizedBox(
           width: 44,
-          child: Text(label, style: const TextStyle(fontSize: 15, color: AppColors.textDim, fontFamilyFallback: kFontFallback)),
+          child: Text(label,
+              style: const TextStyle(
+                  fontSize: 15,
+                  color: AppColors.textDim,
+                  fontFamilyFallback: kFontFallback)),
         ),
-        SelectableChip(label: '－15s', selected: false, onPressed: () => onDelta(-15)),
+        SelectableChip(
+            label: '－15s', selected: false, onPressed: () => onDelta(-15)),
         const SizedBox(width: 10),
         SizedBox(
           width: 66,
           child: Text('${seconds}s',
               textAlign: TextAlign.center,
-              style: const TextStyle(fontSize: 16, color: AppColors.text, fontFamilyFallback: kFontFallback)),
+              style: const TextStyle(
+                  fontSize: 16,
+                  color: AppColors.text,
+                  fontFamilyFallback: kFontFallback)),
         ),
         const SizedBox(width: 10),
-        SelectableChip(label: '＋15s', selected: false, onPressed: () => onDelta(15)),
+        SelectableChip(
+            label: '＋15s', selected: false, onPressed: () => onDelta(15)),
       ],
     );
   }
 }
+
 /// 选集 grid for the current line. Hidden when there are no episodes (e.g.
 /// still resolving or a movie with a single stream).
 class _Episodes extends StatelessWidget {
@@ -707,14 +908,21 @@ class _Episodes extends StatelessWidget {
             textBaseline: TextBaseline.alphabetic,
             children: [
               const Text('选集',
-                  style: TextStyle(fontSize: 24, fontWeight: FontWeight.w700, color: AppColors.text, fontFamilyFallback: kFontFallback)),
+                  style: TextStyle(
+                      fontSize: 24,
+                      fontWeight: FontWeight.w700,
+                      color: AppColors.text,
+                      fontFamilyFallback: kFontFallback)),
               const SizedBox(width: 14),
               Text('共 ${eps.length} ${episodeUnit(eps)}',
-                  style: const TextStyle(fontSize: 15, color: AppColors.textDim, fontFamilyFallback: kFontFallback)),
+                  style: const TextStyle(
+                      fontSize: 15,
+                      color: AppColors.textDim,
+                      fontFamilyFallback: kFontFallback)),
             ],
           ),
           const SizedBox(height: 16),
-          _EpisodePager(
+          EpisodePager(
             episodes: eps,
             currentIndex: app.episodeIndex,
             onPick: app.selectEpisode,
@@ -725,6 +933,7 @@ class _Episodes extends StatelessWidget {
     );
   }
 }
+
 /// Remote-first fullscreen layer. A single [Focus] captures the D-pad:
 /// OK=play/pause, ←/→=seek ∓10s (with OSD), ↑=settings menu, ↓=选集 drawer
 /// (falls back to the progress OSD when there is nothing to pick), BACK=exit
@@ -741,6 +950,8 @@ class _FullscreenPlayerState extends State<_FullscreenPlayer> {
   bool _menuOpen = false;
   // 选集 drawer, opened by ↓ — the highest-frequency action while watching.
   bool _episodesOpen = false;
+  // 下载选集 sheet, opened from the settings menu.
+  bool _downloadOpen = false;
   bool _showProgress = false;
   // Focus anchor for this layer. Overlays push focus into themselves, so when
   // one closes (and unmounts its focused chip) focus goes back here, letting
@@ -766,7 +977,7 @@ class _FullscreenPlayerState extends State<_FullscreenPlayer> {
     super.initState();
     _app = AppScope.read(context);
     _backIntercept = () {
-      if (!_menuOpen && !_episodesOpen) return false;
+      if (!_menuOpen && !_episodesOpen && !_downloadOpen) return false;
       _closeOverlays();
       return true;
     };
@@ -778,6 +989,7 @@ class _FullscreenPlayerState extends State<_FullscreenPlayer> {
     setState(() {
       _menuOpen = false;
       _episodesOpen = false;
+      _downloadOpen = false;
     });
     _rootNode.requestFocus();
   }
@@ -819,7 +1031,9 @@ class _FullscreenPlayerState extends State<_FullscreenPlayer> {
     // Back is handled globally (PopScope / shortcuts → the deduped Back path),
     // so a single press can't be double-counted here. When an overlay is open we
     // let all keys fall through so its chips can traverse / activate.
-    if (_menuOpen || _episodesOpen) return KeyEventResult.ignored;
+    if (_menuOpen || _episodesOpen || _downloadOpen) {
+      return KeyEventResult.ignored;
+    }
 
     if (k == LogicalKeyboardKey.arrowLeft) {
       app.seekBy(const Duration(seconds: -10));
@@ -865,6 +1079,7 @@ class _FullscreenPlayerState extends State<_FullscreenPlayer> {
     }
     return KeyEventResult.ignored;
   }
+
   @override
   Widget build(BuildContext context) {
     final app = AppScope.of(context);
@@ -888,36 +1103,52 @@ class _FullscreenPlayerState extends State<_FullscreenPlayer> {
             const _DanmakuLayer(),
             const _StatusOverlay(),
             const _PlayStateBadge(),
+            const _CacheBadge(),
             // progress / status scrim
             if (_showProgress || !app.player.value.playing)
               const _PlayerControls(),
             if (_osd != null)
               Center(
                 child: Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 26, vertical: 16),
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 26, vertical: 16),
                   decoration: BoxDecoration(
                     color: const Color(0x99000000),
                     borderRadius: BorderRadius.circular(16),
                   ),
                   child: Text(
                     _osd!,
-                    style: const TextStyle(fontSize: 26, fontWeight: FontWeight.w700, color: AppColors.text, fontFamilyFallback: kFontFallback),
+                    style: const TextStyle(
+                        fontSize: 26,
+                        fontWeight: FontWeight.w700,
+                        color: AppColors.text,
+                        fontFamilyFallback: kFontFallback),
                   ),
                 ),
               ),
-            if (_menuOpen) _FullscreenMenu(onClose: _closeOverlays),
+            if (_menuOpen)
+              _FullscreenMenu(
+                onClose: _closeOverlays,
+                onOpenDownloads: () => setState(() {
+                  _menuOpen = false;
+                  _downloadOpen = true;
+                }),
+              ),
             if (_episodesOpen) _EpisodeSheet(onClose: _closeOverlays),
+            if (_downloadOpen) DownloadSheet(onClose: _closeOverlays),
           ],
         ),
       ),
     );
   }
 }
+
 /// Right-docked settings panel shown in fullscreen when ↑ is pressed. Reuses
 /// the side-panel sections; focus is pushed into it on open.
 class _FullscreenMenu extends StatefulWidget {
-  const _FullscreenMenu({required this.onClose});
+  const _FullscreenMenu({required this.onClose, required this.onOpenDownloads});
   final VoidCallback onClose;
+  final VoidCallback onOpenDownloads;
 
   @override
   State<_FullscreenMenu> createState() => _FullscreenMenuState();
@@ -955,10 +1186,17 @@ class _FullscreenMenuState extends State<_FullscreenMenu> {
             mainAxisSize: MainAxisSize.min,
             children: [
               const Text('播放设置',
-                  style: TextStyle(fontSize: 24, fontWeight: FontWeight.w700, color: AppColors.text, fontFamilyFallback: kFontFallback)),
+                  style: TextStyle(
+                      fontSize: 24,
+                      fontWeight: FontWeight.w700,
+                      color: AppColors.text,
+                      fontFamilyFallback: kFontFallback)),
               const SizedBox(height: 6),
               const Text('上键呼出 · 下键选集 · 返回关闭',
-                  style: TextStyle(fontSize: 14, color: AppColors.textDim, fontFamilyFallback: kFontFallback)),
+                  style: TextStyle(
+                      fontSize: 14,
+                      color: AppColors.textDim,
+                      fontFamilyFallback: kFontFallback)),
               const SizedBox(height: 20),
               if (detail != null && detail.playLines.length > 1) ...[
                 const _Label('线路'),
@@ -978,6 +1216,7 @@ class _FullscreenMenuState extends State<_FullscreenMenu> {
                 const SizedBox(height: 18),
               ],
               const _SwitchResourceSection(),
+              _DownloadSection(onOpen: widget.onOpenDownloads),
               const _SpeedSection(),
               const _SkipSection(),
               const _DanmakuSection(),
@@ -988,6 +1227,7 @@ class _FullscreenMenuState extends State<_FullscreenMenu> {
     );
   }
 }
+
 /// 选集 drawer, opened by ↓ in fullscreen. It slides up from the bottom edge
 /// (instead of docking left/right like [_FullscreenMenu]) because the grid is
 /// wide and the eye should stay on the video right above it.
@@ -1089,7 +1329,9 @@ class _EpisodeSheetState extends State<_EpisodeSheet> {
                     const SizedBox(width: 14),
                     Text('共 ${eps.length} $unit',
                         style: const TextStyle(
-                            fontSize: 15, color: AppColors.textDim, fontFamilyFallback: kFontFallback)),
+                            fontSize: 15,
+                            color: AppColors.textDim,
+                            fontFamilyFallback: kFontFallback)),
                     const Spacer(),
                     if (hasNext) ...[
                       Flexible(
@@ -1098,7 +1340,10 @@ class _EpisodeSheetState extends State<_EpisodeSheet> {
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
                           textAlign: TextAlign.right,
-                          style: const TextStyle(fontSize: 14, color: AppColors.textDim, fontFamilyFallback: kFontFallback),
+                          style: const TextStyle(
+                              fontSize: 14,
+                              color: AppColors.textDim,
+                              fontFamilyFallback: kFontFallback),
                         ),
                       ),
                       const SizedBox(width: 14),
@@ -1118,7 +1363,7 @@ class _EpisodeSheetState extends State<_EpisodeSheet> {
                   ],
                 ),
                 const SizedBox(height: 18),
-                _EpisodePager(
+                EpisodePager(
                   episodes: eps,
                   currentIndex: app.episodeIndex,
                   onPick: (i) {
@@ -1133,147 +1378,6 @@ class _EpisodeSheetState extends State<_EpisodeSheet> {
         ),
       ),
     );
-  }
-}
-
-/// Number of episodes shown per page in [_EpisodePager].
-const int _kEpisodesPerPage = 100;
-
-/// D-pad-friendly, paginated 选集 grid shared by [_Episodes] (inline) and
-/// [_MenuEpisodes] (fullscreen menu). Long series — 柯南 runs to thousands of
-/// episodes — are both laggy and a focus hazard when every cell is built at
-/// once, so episodes are split into pages of [_kEpisodesPerPage]. A
-/// horizontally-scrollable row of range chips (1-100, 101-200, …) switches
-/// pages and only the active page's cells are built; the selector hides
-/// entirely for a single page. On open the view lands on (and scrolls the
-/// selector to) the page holding the currently-playing episode.
-class _EpisodePager extends StatefulWidget {
-  const _EpisodePager({
-    required this.episodes,
-    required this.currentIndex,
-    required this.onPick,
-    required this.spacing,
-  });
-
-  final List<Episode> episodes;
-  final int currentIndex;
-  final void Function(int index) onPick;
-  final double spacing;
-
-  @override
-  State<_EpisodePager> createState() => _EpisodePagerState();
-}
-
-class _EpisodePagerState extends State<_EpisodePager> {
-  late int _page = widget.currentIndex ~/ _kEpisodesPerPage;
-  // Tracks the episode count last reflected in [_page]; a change means a new
-  // show was loaded, so the view re-syncs to the current episode's page.
-  late int _syncedCount = widget.episodes.length;
-  // Horizontal scroller for the range chips. We drive it directly (rather than
-  // Scrollable.ensureVisible) so revealing the active chip only ever moves THIS
-  // row — never the enclosing vertical page / fullscreen menu scroll, which
-  // used to get yanked down to 选集 on entry and steal attention from the
-  // player / first menu control.
-  final ScrollController _chips = ScrollController();
-  final GlobalKey _viewportKey = GlobalKey();
-  final GlobalKey _activeChipKey = GlobalKey();
-  bool _didRevealChip = false;
-
-  @override
-  void initState() {
-    super.initState();
-    WidgetsBinding.instance.addPostFrameCallback((_) => _revealActiveChip());
-  }
-
-  @override
-  void dispose() {
-    _chips.dispose();
-    super.dispose();
-  }
-
-  /// Scrolls the chip row (and only the chip row) so the active page's chip is
-  /// centred — e.g. resuming 柯南 at episode 900 shows the 901-1000 chip rather
-  /// than parking at 1-100. Never touches ancestor scrollables.
-  void _revealActiveChip() {
-    if (!mounted || _didRevealChip || !_chips.hasClients) return;
-    final chipBox = _activeChipKey.currentContext?.findRenderObject() as RenderBox?;
-    final viewBox = _viewportKey.currentContext?.findRenderObject() as RenderBox?;
-    if (chipBox == null || viewBox == null) return;
-    _didRevealChip = true;
-    final chipLeft = viewBox.globalToLocal(chipBox.localToGlobal(Offset.zero)).dx;
-    final target = _chips.offset +
-        chipLeft -
-        (viewBox.size.width - chipBox.size.width) / 2;
-    _chips.jumpTo(target.clamp(
-        _chips.position.minScrollExtent, _chips.position.maxScrollExtent));
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    // A new show (different episode count) resets to the current episode's page.
-    if (_syncedCount != widget.episodes.length) {
-      _syncedCount = widget.episodes.length;
-      _page = widget.currentIndex ~/ _kEpisodesPerPage;
-      _didRevealChip = false;
-      WidgetsBinding.instance.addPostFrameCallback((_) => _revealActiveChip());
-    }
-    final pageCount = (widget.episodes.length / _kEpisodesPerPage).ceil();
-    final page = _page.clamp(0, pageCount - 1);
-    final start = page * _kEpisodesPerPage;
-    final end = (start + _kEpisodesPerPage).clamp(0, widget.episodes.length);
-    final unit = episodeUnit(widget.episodes);
-
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        if (pageCount > 1) ...[
-          SingleChildScrollView(
-            key: _viewportKey,
-            controller: _chips,
-            scrollDirection: Axis.horizontal,
-            child: Row(
-              children: [
-                for (var p = 0; p < pageCount; p++)
-                  Padding(
-                    key: p == page ? _activeChipKey : null,
-                    padding: EdgeInsets.only(right: widget.spacing),
-                    child: SelectableChip(
-                      label: _rangeLabel(p),
-                      selected: p == page,
-                      onPressed: () {
-                        if (p != page) setState(() => _page = p);
-                      },
-                    ),
-                  ),
-              ],
-            ),
-          ),
-          SizedBox(height: widget.spacing + 6),
-        ],
-        Wrap(
-          spacing: widget.spacing,
-          runSpacing: widget.spacing,
-          children: [
-            for (var i = start; i < end; i++)
-              SizedBox(
-                width: 150,
-                child: EpisodeCell(
-                  label: episodeLabel(widget.episodes[i].title, i, unit: unit),
-                  current: i == widget.currentIndex,
-                  onPressed: () => widget.onPick(i),
-                ),
-              ),
-          ],
-        ),
-      ],
-    );
-  }
-
-  String _rangeLabel(int p) {
-    final first = p * _kEpisodesPerPage + 1;
-    final last = ((p + 1) * _kEpisodesPerPage).clamp(0, widget.episodes.length);
-    return '$first-$last';
   }
 }
 
@@ -1321,7 +1425,10 @@ class _DanmakuSection extends StatelessWidget {
                   Text('· ${d.activeHost!.label}',
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(fontSize: 13, color: AppColors.textDim, fontFamilyFallback: kFontFallback)),
+                      style: const TextStyle(
+                          fontSize: 13,
+                          color: AppColors.textDim,
+                          fontFamilyFallback: kFontFallback)),
                 ],
                 const SizedBox(width: 10),
                 if (d.statusText != null)
@@ -1330,7 +1437,10 @@ class _DanmakuSection extends StatelessWidget {
                       d.statusText!,
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(fontSize: 13, color: AppColors.textDim, fontFamilyFallback: kFontFallback),
+                      style: const TextStyle(
+                          fontSize: 13,
+                          color: AppColors.textDim,
+                          fontFamilyFallback: kFontFallback),
                     ),
                   ),
               ],
@@ -1410,7 +1520,11 @@ class _ChipRow extends StatelessWidget {
       crossAxisAlignment: CrossAxisAlignment.start,
       mainAxisSize: MainAxisSize.min,
       children: [
-        Text(label, style: const TextStyle(fontSize: 14, color: AppColors.textDim, fontFamilyFallback: kFontFallback)),
+        Text(label,
+            style: const TextStyle(
+                fontSize: 14,
+                color: AppColors.textDim,
+                fontFamilyFallback: kFontFallback)),
         const SizedBox(height: 8),
         Wrap(spacing: 10, runSpacing: 10, children: children),
       ],
@@ -1420,7 +1534,8 @@ class _ChipRow extends StatelessWidget {
 
 /// Manual danmaku match: prompt for a keyword, run the search, then let the user
 /// pick a candidate. Best-effort — a miss just toasts and changes nothing.
-Future<void> _manualMatchDanmaku(BuildContext context, AppController app) async {
+Future<void> _manualMatchDanmaku(
+    BuildContext context, AppController app) async {
   final kw = await showOnScreenKeyboard(
     context,
     title: '手动匹配弹幕',
@@ -1468,7 +1583,11 @@ class _DanmakuMatchDialog extends StatelessWidget {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               const Text('选择弹幕来源',
-                  style: TextStyle(fontSize: 22, fontWeight: FontWeight.w700, color: AppColors.text, fontFamilyFallback: kFontFallback)),
+                  style: TextStyle(
+                      fontSize: 22,
+                      fontWeight: FontWeight.w700,
+                      color: AppColors.text,
+                      fontFamilyFallback: kFontFallback)),
               const SizedBox(height: 16),
               Flexible(
                 child: SingleChildScrollView(
@@ -1479,7 +1598,9 @@ class _DanmakuMatchDialog extends StatelessWidget {
                         Padding(
                           padding: const EdgeInsets.only(bottom: 10),
                           child: _MatchTile(
-                            label: matches[i].label.isEmpty ? '匹配 ${i + 1}' : matches[i].label,
+                            label: matches[i].label.isEmpty
+                                ? '匹配 ${i + 1}'
+                                : matches[i].label,
                             autofocus: i == 0,
                             onPressed: () {
                               app.pickDanmakuMatch(matches[i]);
@@ -1500,7 +1621,8 @@ class _DanmakuMatchDialog extends StatelessWidget {
 }
 
 class _MatchTile extends StatelessWidget {
-  const _MatchTile({required this.label, required this.onPressed, this.autofocus = false});
+  const _MatchTile(
+      {required this.label, required this.onPressed, this.autofocus = false});
   final String label;
   final VoidCallback onPressed;
   final bool autofocus;
@@ -1519,7 +1641,8 @@ class _MatchTile extends StatelessWidget {
           decoration: BoxDecoration(
             color: focused ? AppColors.accent2 : const Color(0x14FFFFFF),
             borderRadius: BorderRadius.circular(12),
-            border: Border.all(color: focused ? AppColors.accent2 : AppColors.hairline),
+            border: Border.all(
+                color: focused ? AppColors.accent2 : AppColors.hairline),
           ),
           child: Text(
             label,

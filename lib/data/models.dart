@@ -100,7 +100,8 @@ class FeedPage {
   final int page;
   final bool hasMore;
 
-  const FeedPage({required this.items, required this.page, required this.hasMore});
+  const FeedPage(
+      {required this.items, required this.page, required this.hasMore});
 
   static const empty = FeedPage(items: [], page: 0, hasMore: false);
 }

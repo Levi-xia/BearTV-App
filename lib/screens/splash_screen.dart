@@ -220,7 +220,10 @@ class _SplashContent extends StatelessWidget {
               fontFamilyFallback: kFontFallback,
               shadows: [
                 Shadow(color: Color(0x804EA8FF), blurRadius: 40),
-                Shadow(color: Color(0x7304060D), blurRadius: 16, offset: Offset(0, 4)),
+                Shadow(
+                    color: Color(0x7304060D),
+                    blurRadius: 16,
+                    offset: Offset(0, 4)),
               ],
             ),
           ),
@@ -250,7 +253,10 @@ class _SplashContent extends StatelessWidget {
             letterSpacing: 6,
             fontFamilyFallback: kFontFallback,
             shadows: [
-              Shadow(color: Color(0x9904060D), blurRadius: 12, offset: Offset(0, 2)),
+              Shadow(
+                  color: Color(0x9904060D),
+                  blurRadius: 12,
+                  offset: Offset(0, 2)),
             ],
           ),
         ),

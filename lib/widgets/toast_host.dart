@@ -68,7 +68,8 @@ class _ToastHostState extends State<ToastHost> {
               duration: const Duration(milliseconds: 300),
               opacity: _visible ? 1 : 0,
               child: Container(
-                padding: const EdgeInsets.symmetric(horizontal: 26, vertical: 13),
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 26, vertical: 13),
                 decoration: BoxDecoration(
                   color: const Color(0xE60A101E),
                   borderRadius: BorderRadius.circular(14),

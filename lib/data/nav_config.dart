@@ -5,7 +5,15 @@
 /// category mapping in `TmdbRepository._query` (case 1–7) and the
 /// continue-watch check (`currentTab == 1`) don't shift.
 const List<String> kTabs = [
-  '我的', '推荐', '电影', '电视剧', '美剧', '动漫', '综艺', '纪录片', '直播',
+  '我的',
+  '推荐',
+  '电影',
+  '电视剧',
+  '美剧',
+  '动漫',
+  '综艺',
+  '纪录片',
+  '直播',
 ];
 
 /// Index of the 直播 (IPTV) tab within [kTabs]. This tab is special-cased in

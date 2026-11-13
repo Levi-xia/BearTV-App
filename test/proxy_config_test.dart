@@ -14,7 +14,8 @@ void main() {
     });
 
     test('trailing slashes on the origin are trimmed', () {
-      Config.applyProxy(enabled: true, proxyBase: 'https://proxy.example.com//');
+      Config.applyProxy(
+          enabled: true, proxyBase: 'https://proxy.example.com//');
       expect(Config.tmdbBase, 'https://proxy.example.com/3');
       expect(Config.tmdbImageBase, 'https://proxy.example.com/t/p');
     });

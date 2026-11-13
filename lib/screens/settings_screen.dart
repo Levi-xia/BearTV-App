@@ -131,12 +131,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
   /// actually use.
   void _requestSpeedTest() {
     final app = AppScope.read(context);
-    final sites =
-        app.allSites.where((s) => app.isSiteSelected(s.id)).toList();
+    final sites = app.allSites.where((s) => app.isSiteSelected(s.id)).toList();
     if (sites.isEmpty) {
-      app.showToast(app.allSites.isEmpty
-          ? '当前没有资源站，请先添加'
-          : '请先选中要测速的资源站');
+      app.showToast(app.allSites.isEmpty ? '当前没有资源站，请先添加' : '请先选中要测速的资源站');
       return;
     }
     setState(() {
@@ -714,7 +711,9 @@ class _UpdaterSectionState extends State<_UpdaterSection> {
       '${(bytes / 1024 / 1024).toStringAsFixed(1)} MB';
 
   static const _dim = TextStyle(
-      fontSize: 15, color: AppColors.textDim, fontFamilyFallback: kFontFallback);
+      fontSize: 15,
+      color: AppColors.textDim,
+      fontFamilyFallback: kFontFallback);
   static const _info = TextStyle(
       fontSize: 16, color: AppColors.text, fontFamilyFallback: kFontFallback);
 
@@ -796,9 +795,7 @@ class _UpdaterSectionState extends State<_UpdaterSection> {
             _ProgressBar(value: c.progress),
             const SizedBox(height: 8),
             Text(
-              c.progress <= 0
-                  ? '正在连接…'
-                  : '下载中 ${(c.progress * 100).round()}%',
+              c.progress <= 0 ? '正在连接…' : '下载中 ${(c.progress * 100).round()}%',
               style: _dim,
             ),
           ],
@@ -1029,10 +1026,8 @@ class _CmsSpeedOverlayState extends State<_CmsSpeedOverlay> {
 
   String _statusText(CmsSpeedResult r) => switch (r.status) {
         CmsSpeedStatus.pending => '测试中…',
-        CmsSpeedStatus.ok =>
-          r.itemCount > 0 ? '可用 · ${r.itemCount} 条' : '可用',
-        CmsSpeedStatus.slow =>
-          r.itemCount > 0 ? '较慢 · ${r.itemCount} 条' : '较慢',
+        CmsSpeedStatus.ok => r.itemCount > 0 ? '可用 · ${r.itemCount} 条' : '可用',
+        CmsSpeedStatus.slow => r.itemCount > 0 ? '较慢 · ${r.itemCount} 条' : '较慢',
         CmsSpeedStatus.badData => r.detail ?? '响应异常',
         CmsSpeedStatus.timeout => '超时',
         CmsSpeedStatus.failed => r.detail ?? '无法连接',
@@ -1063,7 +1058,8 @@ class _CmsSpeedOverlayState extends State<_CmsSpeedOverlay> {
         'CDN ${_latencyText(cdn.latency)}',
       CmsSpeedStatus.pending => 'CDN 测试中…',
       CmsSpeedStatus.timeout => 'CDN 超时',
-      CmsSpeedStatus.badData || CmsSpeedStatus.failed =>
+      CmsSpeedStatus.badData ||
+      CmsSpeedStatus.failed =>
         'CDN ${cdn.detail ?? '无法连接'}',
     };
   }
@@ -1159,8 +1155,7 @@ class _CmsSpeedOverlayState extends State<_CmsSpeedOverlay> {
           child: Padding(
             padding: const EdgeInsets.all(24),
             child: ConstrainedBox(
-              constraints:
-                  const BoxConstraints(maxWidth: 1080, maxHeight: 820),
+              constraints: const BoxConstraints(maxWidth: 1080, maxHeight: 820),
               child: AnimatedBuilder(
                 animation: _tester,
                 builder: (context, _) {
@@ -1215,17 +1210,16 @@ class _CmsSpeedOverlayState extends State<_CmsSpeedOverlay> {
                               const gap = 12.0;
                               final columns =
                                   constraints.maxWidth >= 860 ? 3 : 2;
-                              final width = (constraints.maxWidth -
-                                      gap * (columns - 1)) /
-                                  columns;
+                              final width =
+                                  (constraints.maxWidth - gap * (columns - 1)) /
+                                      columns;
                               return SingleChildScrollView(
                                 child: Wrap(
                                   spacing: gap,
                                   runSpacing: gap,
                                   children: [
                                     for (final r in results)
-                                      SizedBox(
-                                          width: width, child: _card(r)),
+                                      SizedBox(width: width, child: _card(r)),
                                   ],
                                 ),
                               );

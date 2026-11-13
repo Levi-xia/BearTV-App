@@ -169,8 +169,8 @@ class DanmakuClient {
   /// into something that fits a one-line status.
   static String _brief(Object e) {
     var s = e.toString().replaceAll(RegExp(r'\s+'), ' ').trim();
-    final host = RegExp(r'(?:host lookup|Failed host lookup)[: ]*(.+)$')
-        .firstMatch(s);
+    final host =
+        RegExp(r'(?:host lookup|Failed host lookup)[: ]*(.+)$').firstMatch(s);
     if (host != null) s = '无法解析域名 ${host.group(1)}';
     if (s.length > 60) s = '${s.substring(0, 60)}…';
     return s;

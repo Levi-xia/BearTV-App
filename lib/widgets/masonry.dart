@@ -10,7 +10,8 @@ import 'net_image.dart';
 /// `.mcard`: portrait poster + gradient + title/rating overlay. Sized by its
 /// parent grid cell (uniform height for clean DPAD navigation).
 class MasonryCard extends StatelessWidget {
-  const MasonryCard({super.key, required this.item, this.onFocused, this.focusNode});
+  const MasonryCard(
+      {super.key, required this.item, this.onFocused, this.focusNode});
   final VodItem item;
 
   /// Fired when this cell gains focus — used to trigger infinite-scroll paging
@@ -60,11 +61,17 @@ class MasonryCard extends StatelessWidget {
             color: AppColors.cardBg,
             borderRadius: BorderRadius.circular(18),
             border: Border.all(
-              color: focused ? const Color(0xE6FFFFFF) : const Color(0x12FFFFFF),
+              color:
+                  focused ? const Color(0xE6FFFFFF) : const Color(0x12FFFFFF),
               width: focused ? 3 : 1,
             ),
             boxShadow: focused
-                ? const [BoxShadow(color: Color(0x804EA8FF), blurRadius: 40, offset: Offset(0, 16))]
+                ? const [
+                    BoxShadow(
+                        color: Color(0x804EA8FF),
+                        blurRadius: 40,
+                        offset: Offset(0, 16))
+                  ]
                 : null,
           ),
           child: ClipRRect(
@@ -78,7 +85,11 @@ class MasonryCard extends StatelessWidget {
                     gradient: LinearGradient(
                       begin: Alignment.bottomCenter,
                       end: Alignment.topCenter,
-                      colors: [Color(0xEB03060E), Color(0x1A03060E), Color(0x0003060E)],
+                      colors: [
+                        Color(0xEB03060E),
+                        Color(0x1A03060E),
+                        Color(0x0003060E)
+                      ],
                       stops: [0.0, 0.55, 1.0],
                     ),
                   ),

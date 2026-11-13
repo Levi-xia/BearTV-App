@@ -205,7 +205,8 @@ class _NavTabsState extends State<_NavTabs> {
               active: kTabOrder[pos] == app.currentTab,
               focusNode: _nodes[kTabOrder[pos]],
               leftIndex: pos > 0 ? kTabOrder[pos - 1] : null,
-              rightIndex: pos < kTabOrder.length - 1 ? kTabOrder[pos + 1] : null,
+              rightIndex:
+                  pos < kTabOrder.length - 1 ? kTabOrder[pos + 1] : null,
               onFocusSibling: (j) => _nodes[j].requestFocus(),
             ),
         ],

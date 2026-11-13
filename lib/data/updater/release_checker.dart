@@ -108,8 +108,8 @@ class GitHubReleaseChecker {
   /// Extracts the top-level `version: x.y.z+build` line. Returns null when the
   /// body has no usable version.
   static String? parsePubspecVersion(String body) {
-    final m = RegExp(r'^version:\s*"?(.+?)"?\s*$', multiLine: true)
-        .firstMatch(body);
+    final m =
+        RegExp(r'^version:\s*"?(.+?)"?\s*$', multiLine: true).firstMatch(body);
     final v = m?.group(1)?.trim() ?? '';
     return v.isEmpty ? null : v;
   }
@@ -130,7 +130,8 @@ class GitHubReleaseChecker {
           final version = parsePubspecVersion(utf8.decode(res.bodyBytes));
           if (version != null) {
             return ReleaseInfo(
-                version: version.startsWith('v') ? version.substring(1) : version);
+                version:
+                    version.startsWith('v') ? version.substring(1) : version);
           }
           sawParseFailure = true;
         } else {

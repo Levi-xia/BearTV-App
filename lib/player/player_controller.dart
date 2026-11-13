@@ -22,12 +22,14 @@ class PlayerValue {
     this.speed = 1.0,
   });
 
-  double get progress =>
-      duration.inMilliseconds == 0 ? 0 : position.inMilliseconds / duration.inMilliseconds;
+  double get progress => duration.inMilliseconds == 0
+      ? 0
+      : position.inMilliseconds / duration.inMilliseconds;
 
   /// Cached fraction 0..1 for the progress bar's "buffered" (白条) layer.
-  double get bufferedProgress =>
-      duration.inMilliseconds == 0 ? 0 : buffered.inMilliseconds / duration.inMilliseconds;
+  double get bufferedProgress => duration.inMilliseconds == 0
+      ? 0
+      : buffered.inMilliseconds / duration.inMilliseconds;
 
   PlayerValue copyWith({
     bool? playing,
@@ -110,7 +112,8 @@ class MockPlayerController extends ChangeNotifier implements PlayerController {
       _set(_value.copyWith(position: position));
 
   @override
-  Future<void> setSpeed(double speed) async => _set(_value.copyWith(speed: speed));
+  Future<void> setSpeed(double speed) async =>
+      _set(_value.copyWith(speed: speed));
 
   @override
   void dispose() {

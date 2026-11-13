@@ -7,14 +7,16 @@ import '../core/theme.dart';
 /// cyan/blue gradient fill, dark ink text, glow shadow + inner white ring,
 /// scaled to 1.06.
 class FocusFx {
-  static BoxDecoration pill(bool focused, {required double radius, BoxDecoration? base}) {
+  static BoxDecoration pill(bool focused,
+      {required double radius, BoxDecoration? base}) {
     if (!focused) return base ?? const BoxDecoration();
     return BoxDecoration(
       gradient: AppColors.focusGradient,
       borderRadius: BorderRadius.circular(radius),
       border: Border.all(color: const Color(0x8CFFFFFF), width: 2),
       boxShadow: const [
-        BoxShadow(color: Color(0x73009EFF), blurRadius: 34, offset: Offset(0, 10)),
+        BoxShadow(
+            color: Color(0x73009EFF), blurRadius: 34, offset: Offset(0, 10)),
       ],
     );
   }

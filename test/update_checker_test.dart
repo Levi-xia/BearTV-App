@@ -64,7 +64,8 @@ void main() {
       expect(info.tagName, 'v0.1.4');
     });
 
-    test('fetchLatest falls back to jsDelivr when raw is unreachable', () async {
+    test('fetchLatest falls back to jsDelivr when raw is unreachable',
+        () async {
       final client = MockClient((req) async {
         if (req.url.host == 'raw.githubusercontent.com') {
           throw http.ClientException('blocked');
@@ -75,15 +76,14 @@ void main() {
       expect(info.version, '0.1.4+4');
     });
 
-    test('fetchLatest throws 网络异常 when every source is unreachable',
-        () async {
-      final client = MockClient(
-          (req) async => throw http.ClientException('blocked'));
+    test('fetchLatest throws 网络异常 when every source is unreachable', () async {
+      final client =
+          MockClient((req) async => throw http.ClientException('blocked'));
       final c = GitHubReleaseChecker(client: client);
       await expectLater(
         c.fetchLatest(),
-        throwsA(predicate((e) =>
-            e is ReleaseCheckException && e.message.contains('网络异常'))),
+        throwsA(predicate(
+            (e) => e is ReleaseCheckException && e.message.contains('网络异常'))),
       );
     });
 
@@ -111,8 +111,8 @@ void main() {
 
     test('apkDownloadUrls are direct GitHub first, then a mirror', () {
       final c = GitHubReleaseChecker();
-      final urls = c.apkDownloadUrls(const ReleaseInfo(version: '0.1.4+4'),
-          'arm64-v8a');
+      final urls =
+          c.apkDownloadUrls(const ReleaseInfo(version: '0.1.4+4'), 'arm64-v8a');
       expect(
         urls.first,
         'https://github.com/Levi-xia/BearTV-App/releases/download/'
@@ -128,16 +128,15 @@ void main() {
 
     test('download streams to disk and reports progress', () async {
       final bytes = List<int>.generate(1024, (i) => i % 256);
-      final client = MockClient((req) async => http.Response.bytes(
-          bytes, 200,
+      final client = MockClient((req) async => http.Response.bytes(bytes, 200,
           headers: {'content-length': '${bytes.length}'}));
       final c = GitHubReleaseChecker(client: client);
       final tmp = await Directory.systemTemp.createTemp('bear_tv_upd');
       addTearDown(() => tmp.delete(recursive: true));
       final f = File('${tmp.path}/a.apk');
       final heard = <double>[];
-      final size = await c.download(const ReleaseInfo(version: '0.1.4'),
-          'arm64-v8a', f,
+      final size = await c.download(
+          const ReleaseInfo(version: '0.1.4'), 'arm64-v8a', f,
           onProgress: heard.add);
       expect(size, bytes.length);
       expect(f.readAsBytesSync(), bytes);
@@ -157,8 +156,8 @@ void main() {
       final tmp = await Directory.systemTemp.createTemp('bear_tv_upd');
       addTearDown(() => tmp.delete(recursive: true));
       final f = File('${tmp.path}/a.apk');
-      final size = await c.download(
-          const ReleaseInfo(version: '0.1.4'), 'arm64-v8a', f);
+      final size =
+          await c.download(const ReleaseInfo(version: '0.1.4'), 'arm64-v8a', f);
       expect(size, bytes.length);
       expect(f.readAsBytesSync(), bytes);
     });
@@ -171,8 +170,8 @@ void main() {
       await expectLater(
         c.download(const ReleaseInfo(version: '0.1.4'), 'arm64-v8a',
             File('${tmp.path}/a.apk')),
-        throwsA(predicate((e) =>
-            e is ReleaseCheckException && e.message.contains('尚未发布'))),
+        throwsA(predicate(
+            (e) => e is ReleaseCheckException && e.message.contains('尚未发布'))),
       );
     });
   });

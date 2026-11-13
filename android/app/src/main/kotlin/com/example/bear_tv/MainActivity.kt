@@ -13,9 +13,23 @@ import java.io.File
 
 class MainActivity : FlutterActivity() {
     private var updaterChannel: MethodChannel? = null
+    private var storageChannel: MethodChannel? = null
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
+
+        // Downloads need to know how much room is left before queueing a task.
+        storageChannel = MethodChannel(flutterEngine.dartExecutor.binaryMessenger, STORAGE_CHANNEL)
+        storageChannel?.setMethodCallHandler { call, result ->
+                when (call.method) {
+                    "freeBytes" -> {
+                        val path = call.argument<String>("path")
+                        result.success(if (path.isNullOrEmpty()) null else freeBytes(path))
+                    }
+                    else -> result.notImplemented()
+                }
+            }
+
         updaterChannel = MethodChannel(flutterEngine.dartExecutor.binaryMessenger, CHANNEL)
         updaterChannel?.setMethodCallHandler { call, result ->
                 when (call.method) {
@@ -42,7 +56,27 @@ class MainActivity : FlutterActivity() {
     override fun onDestroy() {
         updaterChannel?.setMethodCallHandler(null)
         updaterChannel = null
+        storageChannel?.setMethodCallHandler(null)
+        storageChannel = null
         super.onDestroy()
+    }
+
+    /**
+     * Bytes the app can still write on [path]'s volume (Android's per-app
+     * quota aware). Walks up to the nearest existing ancestor so a not-yet
+     * created downloads folder still answers.
+     */
+    private fun freeBytes(path: String): Long? {
+        return try {
+            var file = File(path)
+            while (!file.exists() && file.parentFile != null) {
+                file = file.parentFile!!
+            }
+            val usable = file.usableSpace
+            if (usable > 0) usable else null
+        } catch (e: Exception) {
+            null
+        }
     }
 
     /** Installed versionName/versionCode + the ABIs this device can run. */
@@ -93,5 +127,6 @@ class MainActivity : FlutterActivity() {
 
     private companion object {
         const val CHANNEL = "bear_tv/updater"
+        const val STORAGE_CHANNEL = "bear_tv/storage"
     }
 }

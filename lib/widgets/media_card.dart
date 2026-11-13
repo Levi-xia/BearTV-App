@@ -21,6 +21,7 @@ class MediaCard extends StatelessWidget {
     this.progress,
     this.badge,
     this.timeLabel,
+    this.onPressed,
   });
 
   final VodItem item;
@@ -48,6 +49,10 @@ class MediaCard extends StatelessWidget {
   /// Resume position text (e.g. `看到 12:34`) shown under the source label.
   final String? timeLabel;
 
+  /// Overrides the default "open this title" action — the 我的下载 rail sends
+  /// the press to the download manager instead of the play page.
+  final VoidCallback? onPressed;
+
   /// Remote MENU first (summon delete on history cards), otherwise defer to the
   /// caller's hook (e.g. top-rail Up → nav tab).
   KeyEventResult _handleKey(FocusNode node, KeyEvent event) {
@@ -69,7 +74,7 @@ class MediaCard extends StatelessWidget {
       ensureVisibleAlignment: 0.5,
       onFocused: onFocused,
       onKeyEvent: (onKeyEvent == null && onMenu == null) ? null : _handleKey,
-      onPressed: () => app.openTitle(item),
+      onPressed: onPressed ?? () => app.openTitle(item),
       builder: (context, focused) {
         return AnimatedContainer(
           duration: kFocusDur,
@@ -86,15 +91,24 @@ class MediaCard extends StatelessWidget {
             color: AppColors.cardBg,
             borderRadius: BorderRadius.circular(20),
             border: Border.all(
-              color: focused ? const Color(0xE6FFFFFF) : const Color(0x12FFFFFF),
+              color:
+                  focused ? const Color(0xE6FFFFFF) : const Color(0x12FFFFFF),
               width: focused ? 3 : 1,
             ),
             boxShadow: focused
                 ? const [
-                    BoxShadow(color: Color(0xA6000000), blurRadius: 70, offset: Offset(0, 30)),
+                    BoxShadow(
+                        color: Color(0xA6000000),
+                        blurRadius: 70,
+                        offset: Offset(0, 30)),
                     BoxShadow(color: Color(0x804EA8FF), blurRadius: 46),
                   ]
-                : const [BoxShadow(color: Color(0x73000000), blurRadius: 34, offset: Offset(0, 14))],
+                : const [
+                    BoxShadow(
+                        color: Color(0x73000000),
+                        blurRadius: 34,
+                        offset: Offset(0, 14))
+                  ],
           ),
           child: ClipRRect(
             borderRadius: BorderRadius.circular(focused ? 17 : 19),
@@ -108,17 +122,23 @@ class MediaCard extends StatelessWidget {
                     gradient: LinearGradient(
                       begin: Alignment.bottomCenter,
                       end: Alignment.topCenter,
-                      colors: [Color(0xF203060E), Color(0x5903060E), Color(0x0003060E)],
+                      colors: [
+                        Color(0xF203060E),
+                        Color(0x5903060E),
+                        Color(0x0003060E)
+                      ],
                       stops: [0.06, 0.48, 0.78],
                     ),
                   ),
                 ),
                 _Tag(text: item.hd, left: 12),
                 if (item.neu) const _NewTag(),
-                if ((badge != null && badge!.isNotEmpty) || (timeLabel != null && timeLabel!.isNotEmpty))
+                if ((badge != null && badge!.isNotEmpty) ||
+                    (timeLabel != null && timeLabel!.isNotEmpty))
                   _ResourceBadge(source: badge, time: timeLabel),
                 _Meta(item: item, focused: focused),
-                if (progress != null && progress! > 0) _ProgressStrip(value: progress!),
+                if (progress != null && progress! > 0)
+                  _ProgressStrip(value: progress!),
               ],
             ),
           ),

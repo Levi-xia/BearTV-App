@@ -53,7 +53,8 @@ class CmsClient {
   Future<List<SearchHit>> searchSource(CmsSite site, String query) async {
     final base = site.api;
     final sep = base.contains('?') ? '&' : '?';
-    final uri = Uri.parse('$base${sep}ac=videolist&wd=${Uri.encodeQueryComponent(query)}');
+    final uri = Uri.parse(
+        '$base${sep}ac=videolist&wd=${Uri.encodeQueryComponent(query)}');
     final data = await _getJson(uri);
     final list = data?['list'];
     if (list is! List || list.isEmpty) return const [];
@@ -94,7 +95,8 @@ class CmsClient {
     if (list is! List || list.isEmpty) return null;
     final info = list.first;
     if (info is! Map) return null;
-    return mapDetail(Map<String, dynamic>.from(info), sourceId: site.id, sourceName: site.name);
+    return mapDetail(Map<String, dynamic>.from(info),
+        sourceId: site.id, sourceName: site.name);
   }
 
   /// Special sources: scrape the HTML detail page for m3u8 links.
@@ -111,7 +113,11 @@ class CmsClient {
 
     var matches = <String>[];
     if (site.id == 'ffzy') {
-      matches = _ffzy.allMatches(html).map((m) => m.group(1) ?? '').where((s) => s.isNotEmpty).toList();
+      matches = _ffzy
+          .allMatches(html)
+          .map((m) => m.group(1) ?? '')
+          .where((s) => s.isNotEmpty)
+          .toList();
     }
     if (matches.isEmpty) {
       matches = _m3u8.allMatches(html).map((m) {
@@ -130,7 +136,8 @@ class CmsClient {
 
     final titleMatch = _h1.firstMatch(html);
     final episodes = <Episode>[
-      for (var i = 0; i < urls.length; i++) Episode(title: '第${i + 1}集', url: urls[i]),
+      for (var i = 0; i < urls.length; i++)
+        Episode(title: '第${i + 1}集', url: urls[i]),
     ];
     return VodDetail(
       sourceId: site.id,
@@ -150,7 +157,9 @@ class CmsClient {
 /// human line names, aligned by index; otherwise lines are named 线路N.
 List<PlayLine> parsePlayUrl(String? vodPlayUrl, {String? playFrom}) {
   if (vodPlayUrl == null || vodPlayUrl.isEmpty) return const [];
-  final names = (playFrom == null || playFrom.isEmpty) ? const <String>[] : playFrom.split(r'$$$');
+  final names = (playFrom == null || playFrom.isEmpty)
+      ? const <String>[]
+      : playFrom.split(r'$$$');
   final rawLines = vodPlayUrl.split(r'$$$');
   final out = <PlayLine>[];
   for (var i = 0; i < rawLines.length; i++) {
@@ -159,11 +168,15 @@ List<PlayLine> parsePlayUrl(String? vodPlayUrl, {String? playFrom}) {
       final parts = ep.split(r'$');
       final url = parts.length > 1 ? parts[1] : '';
       if (url.startsWith('http://') || url.startsWith('https://')) {
-        episodes.add(Episode(title: parts[0].isNotEmpty ? parts[0] : '第${episodes.length + 1}集', url: url));
+        episodes.add(Episode(
+            title: parts[0].isNotEmpty ? parts[0] : '第${episodes.length + 1}集',
+            url: url));
       }
     }
     if (episodes.isEmpty) continue;
-    final name = (i < names.length && names[i].trim().isNotEmpty) ? names[i].trim() : '线路${out.length + 1}';
+    final name = (i < names.length && names[i].trim().isNotEmpty)
+        ? names[i].trim()
+        : '线路${out.length + 1}';
     out.add(PlayLine(name: name, episodes: episodes));
   }
   return _preferM3u8(out);
@@ -184,7 +197,8 @@ List<PlayLine> _preferM3u8(List<PlayLine> lines) {
   for (final line in lines) {
     if (line.name.toLowerCase().contains('m3u8')) {
       byName.add(line);
-    } else if (line.episodes.isNotEmpty && _isM3u8Url(line.episodes.first.url)) {
+    } else if (line.episodes.isNotEmpty &&
+        _isM3u8Url(line.episodes.first.url)) {
       byUrl.add(line);
     } else {
       rest.add(line);
@@ -201,8 +215,10 @@ bool _isM3u8Url(String url) {
 /// Map a MacCMS detail `list[0]` object into a [VodDetail]. Pure + testable.
 /// Falls back to scanning `vod_content` for m3u8 links when there is no
 /// structured `vod_play_url`.
-VodDetail mapDetail(Map<String, dynamic> info, {required String sourceId, required String sourceName}) {
-  var lines = parsePlayUrl(info['vod_play_url'] as String?, playFrom: info['vod_play_from'] as String?);
+VodDetail mapDetail(Map<String, dynamic> info,
+    {required String sourceId, required String sourceName}) {
+  var lines = parsePlayUrl(info['vod_play_url'] as String?,
+      playFrom: info['vod_play_from'] as String?);
   if (lines.isEmpty) {
     final content = (info['vod_content'] as String?) ?? '';
     final m3u8 = RegExp(r'\$https?://[^"' "'" r'\s]+?\.m3u8')
@@ -212,7 +228,8 @@ VodDetail mapDetail(Map<String, dynamic> info, {required String sourceId, requir
     if (m3u8.isNotEmpty) {
       lines = [
         PlayLine(name: '线路一', episodes: [
-          for (var i = 0; i < m3u8.length; i++) Episode(title: '第${i + 1}集', url: m3u8[i]),
+          for (var i = 0; i < m3u8.length; i++)
+            Episode(title: '第${i + 1}集', url: m3u8[i]),
         ]),
       ];
     }

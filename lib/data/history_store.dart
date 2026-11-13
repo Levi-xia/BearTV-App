@@ -18,6 +18,12 @@ class HistoryEntry {
   final String vodId;
   final int lineIndex;
   final int episodeIndex;
+
+  /// Identity of the episode itself (not just its index) so a cached download
+  /// can be matched after a line/episode reorder. Old records read as empty.
+  final String episodeTitle;
+  final String episodeUrl;
+
   final int positionMs;
   final int durationMs;
   final int updatedAt; // epoch ms
@@ -33,6 +39,8 @@ class HistoryEntry {
     this.vodId = '',
     this.lineIndex = 0,
     this.episodeIndex = 0,
+    this.episodeTitle = '',
+    this.episodeUrl = '',
     this.positionMs = 0,
     this.durationMs = 0,
     this.updatedAt = 0,
@@ -54,6 +62,8 @@ class HistoryEntry {
     String? vodId,
     int? lineIndex,
     int? episodeIndex,
+    String? episodeTitle,
+    String? episodeUrl,
     int? positionMs,
     int? durationMs,
     int? updatedAt,
@@ -69,6 +79,8 @@ class HistoryEntry {
         vodId: vodId ?? this.vodId,
         lineIndex: lineIndex ?? this.lineIndex,
         episodeIndex: episodeIndex ?? this.episodeIndex,
+        episodeTitle: episodeTitle ?? this.episodeTitle,
+        episodeUrl: episodeUrl ?? this.episodeUrl,
         positionMs: positionMs ?? this.positionMs,
         durationMs: durationMs ?? this.durationMs,
         updatedAt: updatedAt ?? this.updatedAt,
@@ -85,6 +97,8 @@ class HistoryEntry {
         'vodId': vodId,
         'lineIndex': lineIndex,
         'episodeIndex': episodeIndex,
+        'episodeTitle': episodeTitle,
+        'episodeUrl': episodeUrl,
         'positionMs': positionMs,
         'durationMs': durationMs,
         'updatedAt': updatedAt,
@@ -101,6 +115,8 @@ class HistoryEntry {
         vodId: (j['vodId'] as String?) ?? '',
         lineIndex: (j['lineIndex'] as int?) ?? 0,
         episodeIndex: (j['episodeIndex'] as int?) ?? 0,
+        episodeTitle: (j['episodeTitle'] as String?) ?? '',
+        episodeUrl: (j['episodeUrl'] as String?) ?? '',
         positionMs: (j['positionMs'] as int?) ?? 0,
         durationMs: (j['durationMs'] as int?) ?? 0,
         updatedAt: (j['updatedAt'] as int?) ?? 0,
@@ -152,7 +168,8 @@ class HistoryStore {
       final parsed = <HistoryEntry>[];
       for (final raw in _box!.values) {
         try {
-          parsed.add(HistoryEntry.fromJson(jsonDecode(raw) as Map<String, dynamic>));
+          parsed.add(
+              HistoryEntry.fromJson(jsonDecode(raw) as Map<String, dynamic>));
         } catch (_) {
           // Skip a corrupt record rather than failing the whole load.
         }
@@ -171,7 +188,8 @@ class HistoryStore {
   /// Insert or update the entry for [entry.key], moving it to the front.
   void put(HistoryEntry entry) {
     _entries.removeWhere((e) => e.key == entry.key);
-    final stamped = entry.copyWith(updatedAt: DateTime.now().millisecondsSinceEpoch);
+    final stamped =
+        entry.copyWith(updatedAt: DateTime.now().millisecondsSinceEpoch);
     _entries.insert(0, stamped);
 
     final evicted = <String>[];
@@ -203,4 +221,3 @@ class HistoryStore {
     return true;
   }
 }
-

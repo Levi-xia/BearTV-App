@@ -197,7 +197,8 @@ class _DanmakuOverlayState extends State<DanmakuOverlay>
       // the anchor to that raw value every tick makes the clock hop backward
       // ~50ms each second. Instead keep it continuous and bleed off the small
       // drift gradually, so danmaku never visibly stutters or jumps back.
-      _baseT = predicted + (drift * _kClockSlew).clamp(-_kMaxSlewStep, _kMaxSlewStep);
+      _baseT = predicted +
+          (drift * _kClockSlew).clamp(-_kMaxSlewStep, _kMaxSlewStep);
     }
     _baseWallMs = nowMs;
     _playing = v.playing;
@@ -216,15 +217,15 @@ class _DanmakuOverlayState extends State<DanmakuOverlay>
     if (d.epoch != _epoch || cfgChanged) {
       _epoch = d.epoch;
       _cfg = d.config;
-      _rasterCache.clear(); // font/opacity may have changed; GC frees old images
+      _rasterCache
+          .clear(); // font/opacity may have changed; GC frees old images
       _resetActive();
       _cursor = _seekCursor(_t);
     }
     _maybeToggleTicker();
   }
 
-  int _wallMs() =>
-      (widget.clock ?? DateTime.now)().millisecondsSinceEpoch;
+  int _wallMs() => (widget.clock ?? DateTime.now)().millisecondsSinceEpoch;
 
   void _syncFromPlayer() {
     final v = widget.player.value;
@@ -238,13 +239,13 @@ class _DanmakuOverlayState extends State<DanmakuOverlay>
   }
 
   void _maybeToggleTicker() {
-    final enabled =
-        _cfg?.enabled == true && widget.danmaku.items.isNotEmpty;
+    final enabled = _cfg?.enabled == true && widget.danmaku.items.isNotEmpty;
     final shouldRun = enabled && _playing;
     if (shouldRun && !_ticker.isActive) {
       final now = _wallMs();
       _baseWallMs = now; // no paused-time jump
-      _animWallMs = now.toDouble(); // don't fold the pause into the scroll timeline
+      _animWallMs =
+          now.toDouble(); // don't fold the pause into the scroll timeline
       _tickerEpochMs = now.toDouble(); // start() resets elapsed to ~0
       _ticker.start();
     } else if (!shouldRun && _ticker.isActive) {
@@ -366,8 +367,9 @@ class _DanmakuOverlayState extends State<DanmakuOverlay>
     for (var i = 0; i < _scrollLane.length; i++) {
       final last = _scrollLane[i];
       if (last == null) return i;
-      final entered =
-          (_animT - last.emitAnimT) / cfg.scrollSeconds * (_size.width + last.width);
+      final entered = (_animT - last.emitAnimT) /
+          cfg.scrollSeconds *
+          (_size.width + last.width);
       if (entered - last.width - _gapPx >= 0) return i;
     }
     return -1;
@@ -401,7 +403,8 @@ class _DanmakuOverlayState extends State<DanmakuOverlay>
             // A tight, low-blur shadow for contrast against bright video. The
             // blur is rasterized into the image ONCE here, so the per-frame
             // draw is a plain blit with no MaskFilter cost.
-            Shadow(color: Color(0xCC000000), blurRadius: 1, offset: Offset(0, 1)),
+            Shadow(
+                color: Color(0xCC000000), blurRadius: 1, offset: Offset(0, 1)),
           ],
         ),
       ),
@@ -485,15 +488,12 @@ class _DanmakuPainter extends CustomPainter {
         x = (size.width - f.width) / 2;
         y = size.height - (f.lane + 1) * laneH;
       }
-      final src = Rect.fromLTWH(
-          0, 0, f.img.width.toDouble(), f.img.height.toDouble());
+      final src =
+          Rect.fromLTWH(0, 0, f.img.width.toDouble(), f.img.height.toDouble());
       // The glyph origin sits at (_imgPad, _imgPad) inside the image, so offset
       // the blit to keep the on-screen position identical to the old direct paint.
-      final dst = Rect.fromLTWH(
-          x - _DanmakuOverlayState._imgPad,
-          y + 2 - _DanmakuOverlayState._imgPad,
-          f.imgW,
-          f.imgH);
+      final dst = Rect.fromLTWH(x - _DanmakuOverlayState._imgPad,
+          y + 2 - _DanmakuOverlayState._imgPad, f.imgW, f.imgH);
       canvas.drawImageRect(f.img, src, dst, s._imgPaint);
     }
   }

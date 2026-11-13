@@ -15,10 +15,9 @@ const _site = CmsSite(
 
 void main() {
   test('probe URI reuses the apiv3 list call and handles existing query', () {
-    expect(cmsProbeUri(_site).queryParameters,
-        {'ac': 'videolist', 'pg': '1'});
-    const withQuery = CmsSite(
-        id: 'b', name: 'B', api: 'https://b.test/api.php?token=x');
+    expect(cmsProbeUri(_site).queryParameters, {'ac': 'videolist', 'pg': '1'});
+    const withQuery =
+        CmsSite(id: 'b', name: 'B', api: 'https://b.test/api.php?token=x');
     expect(cmsProbeUri(withQuery).queryParameters,
         {'token': 'x', 'ac': 'videolist', 'pg': '1'});
   });
@@ -114,11 +113,11 @@ void main() {
   });
 
   test('CDN probe measures the m3u8 and validates its content', () async {
-    final client = MockClient((_) async =>
-        http.Response('#EXTM3U\n#EXT-X-VERSION:3\n', 200));
+    final client = MockClient(
+        (_) async => http.Response('#EXTM3U\n#EXT-X-VERSION:3\n', 200));
 
-    final cdn = await probeCdnLatency('https://cdn.test/a.m3u8',
-        client: client);
+    final cdn =
+        await probeCdnLatency('https://cdn.test/a.m3u8', client: client);
     expect(cdn.status, CmsSpeedStatus.ok);
     expect(cdn.latency, isNotNull);
   });

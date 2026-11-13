@@ -255,7 +255,8 @@ void main() {
       await s.init();
       await s.setTmdbApiKey('');
 
-      final restarted = SettingsStore(store: store, seededTmdbApiKey: 'seed-key');
+      final restarted =
+          SettingsStore(store: store, seededTmdbApiKey: 'seed-key');
       await restarted.init();
 
       expect(restarted.tmdbApiKey, '');

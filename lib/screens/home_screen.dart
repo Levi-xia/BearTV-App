@@ -4,9 +4,11 @@ import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
 
 import '../core/app_controller.dart';
+import '../core/format.dart';
 import '../core/app_scope.dart';
 import '../core/tab_feed.dart';
 import '../core/theme.dart';
+import '../data/downloads/download_manager.dart';
 import '../data/nav_config.dart';
 import '../data/models.dart';
 import '../widgets/chips.dart';
@@ -204,12 +206,14 @@ class _HomeScreenState extends State<HomeScreen> {
     // 直播 (IPTV) tab: a self-contained browser that doesn't use TMDB, so it
     // sits above the API-key / feed-loading checks below.
     if (app.currentTab == kIptvTab) return const IptvBrowser();
+    // 我的 is fully local (downloads + history) and works without a TMDB key,
+    // so it sits above the API-key gate.
+    if (app.currentTab == 0) return _minePage(app);
     if (!app.hasApiKey) return _needKeyPage(app);
     final feed = app.currentFeed;
     if (feed == null) return _loader();
     _syncTab(feed);
 
-    if (app.currentTab == 0) return _minePage(app);
     if (feed.hero.isEmpty) {
       if (feed.status.value == FeedStatus.error) return _errorPage(app);
       return _loader();
@@ -223,8 +227,7 @@ class _HomeScreenState extends State<HomeScreen> {
     // A pending delete target may have just been removed elsewhere — drop a
     // stale overlay rather than confirming against a gone record.
     final target = _deleteTarget;
-    final showDelete =
-        target != null && recent.any((e) => e.key == target.key);
+    final showDelete = target != null && recent.any((e) => e.key == target.key);
     return Stack(
       children: [
         SingleChildScrollView(
@@ -248,6 +251,8 @@ class _HomeScreenState extends State<HomeScreen> {
                   badgeForItem: (item) => _recentBadge(app, item),
                   timeForItem: (item) => _recentTime(app, item),
                 ),
+              const SizedBox(height: 36),
+              _MineDownloadsEntry(app: app, autofocus: recent.isEmpty),
               const SizedBox(height: 80),
             ],
           ),
@@ -676,6 +681,137 @@ class _Badge extends StatelessWidget {
                 color: Color(0xFFE6EFFF),
                 fontFamilyFallback: kFontFallback)),
       );
+}
+
+/// 我的 → 下载管理 section, sitting below 最近播放: the same `RailHead` title
+/// treatment as the history rail, with a single entry row underneath.
+///
+/// A plain row rather than a rail: downloads are a management surface, not a
+/// content feed. Shares the history section's glass/hairline card language and
+/// rebuilds in isolation so progress updates don't repaint the page.
+class _MineDownloadsEntry extends StatelessWidget {
+  const _MineDownloadsEntry({required this.app, this.autofocus = false});
+
+  final AppController app;
+  final bool autofocus;
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const Padding(
+          padding: EdgeInsets.only(left: AppDims.pad, bottom: 16),
+          child: RailHead(
+            title: '我的下载',
+            subtitle: '离线也能看 · 按 剧 · 来源 管理',
+          ),
+        ),
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: AppDims.pad),
+          child: ListenableBuilder(
+            listenable: app.downloads,
+            builder: (context, _) => _entry(app.downloads),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _entry(DownloadManager downloads) {
+    var bytes = 0;
+    for (final group in downloads.groups) {
+      bytes += group.totalBytes;
+    }
+    final active = downloads.activeCount;
+    final done = downloads.completedCount;
+
+    final String detail;
+    if (!downloads.available) {
+      detail = '本地存储不可用，下载功能暂不可用';
+    } else if (active == 0 && done == 0) {
+      detail = '还没有下载 · 在播放页选择「下载选集」';
+    } else {
+      detail = [
+        if (active > 0) '下载中 $active 集',
+        if (done > 0) '已缓存 $done 集',
+      ].join(' · ');
+    }
+
+    return Focusable(
+      onPressed: app.openDownloads,
+      autofocus: autofocus,
+      ensureVisibleAlignment: 0.5,
+      builder: (context, focused) {
+        final base = BoxDecoration(
+          color: AppColors.glass,
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(color: AppColors.hairline),
+        );
+        final ink = focused ? AppColors.focusInk : AppColors.text;
+        final dim = focused ? const Color(0xB304121F) : AppColors.textDim;
+        return FocusFx.scale(
+          focused,
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 20),
+            decoration: focused ? FocusFx.pill(focused, radius: 16) : base,
+            child: Row(
+              children: [
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        '下载管理',
+                        style: TextStyle(
+                          fontSize: 20,
+                          fontWeight: FontWeight.w700,
+                          color: ink,
+                          fontFamilyFallback: kFontFallback,
+                        ),
+                      ),
+                      const SizedBox(height: 6),
+                      Text(
+                        detail,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          fontSize: 15,
+                          color: dim,
+                          fontFamilyFallback: kFontFallback,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                if (bytes > 0) ...[
+                  const SizedBox(width: 20),
+                  Text(
+                    '占用 ${formatBytes(bytes)}',
+                    style: TextStyle(
+                      fontSize: 15,
+                      color: dim,
+                      fontFamilyFallback: kFontFallback,
+                    ),
+                  ),
+                ],
+                const SizedBox(width: 16),
+                Text(
+                  '›',
+                  style: TextStyle(
+                    fontSize: 26,
+                    height: 1,
+                    color: focused ? AppColors.focusInk : AppColors.textDim,
+                    fontFamilyFallback: kFontFallback,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
 }
 
 /// Modal "delete this record?" confirm raised by a MENU press on a 最近播放

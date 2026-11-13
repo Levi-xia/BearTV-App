@@ -25,7 +25,8 @@ void main() {
       expect(formatDanmakuSearchName('剧名【4K修复】导演剪辑', 4), '剧名 S01E05');
     });
 
-    test('keeps season / fullwidth-year noise (BearTV parity, avoids over-strip)',
+    test(
+        'keeps season / fullwidth-year noise (BearTV parity, avoids over-strip)',
         () {
       // Earlier over-stripping of 季 / fullwidth（）broke otherwise-valid matches.
       expect(formatDanmakuSearchName('庆余年 第二季', 0), '庆余年 第二季 S01E01');
@@ -139,7 +140,11 @@ void main() {
   group('DanmakuConfig', () {
     test('round-trips through json', () {
       const c = DanmakuConfig(
-          enabled: false, opacity: 0.7, fontSize: 26, scrollSeconds: 6, area: 1.0);
+          enabled: false,
+          opacity: 0.7,
+          fontSize: 26,
+          scrollSeconds: 6,
+          area: 1.0);
       final back = DanmakuConfig.fromJson(c.toJson());
       expect(back.enabled, false);
       expect(back.opacity, 0.7);

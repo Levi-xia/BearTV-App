@@ -16,7 +16,8 @@ import '../core/theme.dart';
 /// in main) covers repeat views. Empty URLs (missing TMDB artwork) render as a
 /// plain placeholder block.
 class NetImage extends StatelessWidget {
-  const NetImage(this.url, {super.key, this.fit = BoxFit.cover, this.alignment = Alignment.center});
+  const NetImage(this.url,
+      {super.key, this.fit = BoxFit.cover, this.alignment = Alignment.center});
 
   final String url;
   final BoxFit fit;

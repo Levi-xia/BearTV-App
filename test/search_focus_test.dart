@@ -172,7 +172,8 @@ void main() {
 
   /// The two halves are separate lanes: a vertical press on a poster must not
   /// land on the left panel's chips, and the grid must keep its column.
-  testWidgets('the result grid keeps its column and leaves upward to the header',
+  testWidgets(
+      'the result grid keeps its column and leaves upward to the header',
       (tester) async {
     await _openSearch(tester, results: [for (var i = 0; i < 16; i++) _item(i)]);
 
@@ -208,7 +209,8 @@ void main() {
       history: const ['三体', '狂飙', '漫长的季节'],
     );
 
-    expect(_focusIsOn(find.text(_hint)), isTrue, reason: 'entry focus is the box');
+    expect(_focusIsOn(find.text(_hint)), isTrue,
+        reason: 'entry focus is the box');
 
     await _press(tester, LogicalKeyboardKey.arrowDown);
     expect(_focusIsOn(find.text('清空').first), isTrue);

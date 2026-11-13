@@ -33,44 +33,55 @@ class TmdbRepository implements ContentRepository {
     return FeedPage(items: items, page: page, hasMore: hasMore);
   }
 
-  Future<(Map<String, dynamic>, String)> _query(int tab, int page, int sort) async {
+  Future<(Map<String, dynamic>, String)> _query(
+      int tab, int page, int sort) async {
     final (mSort, mExtra) = _movieSort(sort);
     final (tSort, tExtra) = _tvSort(sort);
     switch (tab) {
       case 1: // 推荐：默认用 trending 混合榜；选了排序则退回华语电影发现
         if (sort == 0) return (await _api.trendingAll(page), 'movie');
         return (
-          await _api.discoverMovie(page, originCountry: 'CN', sortBy: mSort, extra: mExtra),
+          await _api.discoverMovie(page,
+              originCountry: 'CN', sortBy: mSort, extra: mExtra),
           'movie'
         );
       case 2: // 电影（偏好中国大陆）
         return (
-          await _api.discoverMovie(page, originCountry: 'CN', sortBy: mSort, extra: mExtra),
+          await _api.discoverMovie(page,
+              originCountry: 'CN', sortBy: mSort, extra: mExtra),
           'movie'
         );
       case 3: // 电视剧（中国大陆）
         return (
-          await _api.discoverTv(page, originCountry: 'CN', sortBy: tSort, extra: tExtra),
+          await _api.discoverTv(page,
+              originCountry: 'CN', sortBy: tSort, extra: tExtra),
           'tv'
         );
       case 4: // 美剧（US）
         return (
-          await _api.discoverTv(page, originCountry: 'US', sortBy: tSort, extra: tExtra),
+          await _api.discoverTv(page,
+              originCountry: 'US', sortBy: tSort, extra: tExtra),
           'tv'
         );
       case 5: // 动漫（国漫：动画 + 大陆）
         return (
-          await _api.discoverTv(page, genres: '16', originCountry: 'CN', sortBy: tSort, extra: tExtra),
+          await _api.discoverTv(page,
+              genres: '16', originCountry: 'CN', sortBy: tSort, extra: tExtra),
           'tv'
         );
       case 6: // 综艺（真人秀/脱口秀 + 大陆）
         return (
-          await _api.discoverTv(page, genres: '10764,10767', originCountry: 'CN', sortBy: tSort, extra: tExtra),
+          await _api.discoverTv(page,
+              genres: '10764,10767',
+              originCountry: 'CN',
+              sortBy: tSort,
+              extra: tExtra),
           'tv'
         );
       case 7: // 纪录片（纪录 + 大陆）
         return (
-          await _api.discoverTv(page, genres: '99', originCountry: 'CN', sortBy: tSort, extra: tExtra),
+          await _api.discoverTv(page,
+              genres: '99', originCountry: 'CN', sortBy: tSort, extra: tExtra),
           'tv'
         );
       default:
@@ -84,7 +95,10 @@ class TmdbRepository implements ContentRepository {
       case 1: // 高分：评分降序，过滤低票数避免异常高分
         return ('vote_average.desc', const {'vote_count.gte': '200'});
       case 2: // 最新：上映日期降序，排除未上映
-        return ('primary_release_date.desc', {'primary_release_date.lte': _today()});
+        return (
+          'primary_release_date.desc',
+          {'primary_release_date.lte': _today()}
+        );
       case 3: // 经典：累计票数最多
         return ('vote_count.desc', const {});
       default: // 热门
@@ -135,7 +149,8 @@ class TmdbRepository implements ContentRepository {
   }
 
   @override
-  Future<String?> resolvePlayUrl(VodItem item, int episode, {String line = '线路一'}) async {
+  Future<String?> resolvePlayUrl(VodItem item, int episode,
+      {String line = '线路一'}) async {
     // TMDB is metadata-only; playback is resolved via the CMS layer (VodRepository).
     return null;
   }

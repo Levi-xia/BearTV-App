@@ -31,7 +31,8 @@ _Meta _parseExtinf(String line) {
   final content = line.replaceFirst(_extinf, '').trimLeft();
   final commaIndex = content.indexOf(',');
   final meta = commaIndex >= 0 ? content.substring(0, commaIndex) : content;
-  final displayName = commaIndex >= 0 ? content.substring(commaIndex + 1).trim() : '';
+  final displayName =
+      commaIndex >= 0 ? content.substring(commaIndex + 1).trim() : '';
   final attrs = _parseAttributes(meta);
   final name = displayName.isNotEmpty
       ? displayName

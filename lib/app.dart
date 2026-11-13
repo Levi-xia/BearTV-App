@@ -5,6 +5,7 @@ import 'core/app_controller.dart';
 import 'core/app_scope.dart';
 import 'core/theme.dart';
 import 'player/video_adapter.dart';
+import 'screens/downloads_screen.dart';
 import 'screens/home_screen.dart';
 import 'screens/play_screen.dart';
 import 'screens/search_screen.dart';
@@ -27,7 +28,7 @@ class NebulaApp extends StatefulWidget {
   State<NebulaApp> createState() => _NebulaAppState();
 }
 
-class _NebulaAppState extends State<NebulaApp> {
+class _NebulaAppState extends State<NebulaApp> with WidgetsBindingObserver {
   late final AppController _controller;
   late final bool _ownsController;
 
@@ -42,12 +43,31 @@ class _NebulaAppState extends State<NebulaApp> {
     // own controller (defaulting to MockPlayerController) via [widget.controller].
     _controller = widget.controller ?? AppController(player: VideoAdapter());
     _controller.init();
+    WidgetsBinding.instance.addObserver(this);
   }
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     if (_ownsController) _controller.dispose();
     super.dispose();
+  }
+
+  /// Downloads only run in-app: when the app goes to the background we cancel
+  /// the active transfer but keep the partial files, then resume on return
+  /// (only the tasks we paused ourselves — a user pause stays paused).
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    switch (state) {
+      case AppLifecycleState.paused:
+      case AppLifecycleState.hidden:
+      case AppLifecycleState.detached:
+        _controller.downloads.pauseActiveForLifecycle();
+      case AppLifecycleState.resumed:
+        _controller.downloads.resumeAutoPaused();
+      case AppLifecycleState.inactive:
+        break;
+    }
   }
 
   @override
@@ -165,7 +185,8 @@ class Shell extends StatelessWidget {
           },
           const SingleActivator(LogicalKeyboardKey.escape): app.backFromKey,
           const SingleActivator(LogicalKeyboardKey.goBack): app.backFromKey,
-          const SingleActivator(LogicalKeyboardKey.browserBack): app.backFromKey,
+          const SingleActivator(LogicalKeyboardKey.browserBack):
+              app.backFromKey,
         },
         child: Material(
           // Transparent Material: paints no background (DynamicBackground shows
@@ -193,6 +214,8 @@ class Shell extends StatelessWidget {
                         if (app.page == AppPage.settings)
                           const _SettingsLayer(),
                         if (app.page == AppPage.search) const _SearchLayer(),
+                        if (app.page == AppPage.downloads)
+                          const _DownloadsLayer(),
                       ],
                     ),
                   ),
@@ -289,6 +312,25 @@ class _SearchLayer extends StatelessWidget {
         child: Transform.scale(scale: 0.985 + 0.015 * t, child: child),
       ),
       child: FocusTraversalGroup(child: const SearchScreen()),
+    );
+  }
+}
+
+/// 下载管理 page, faded in over the home background.
+class _DownloadsLayer extends StatelessWidget {
+  const _DownloadsLayer();
+
+  @override
+  Widget build(BuildContext context) {
+    return TweenAnimationBuilder<double>(
+      tween: Tween(begin: 0, end: 1),
+      duration: kPageDur,
+      curve: kEase,
+      builder: (context, t, child) => Opacity(
+        opacity: t,
+        child: Transform.scale(scale: 0.985 + 0.015 * t, child: child),
+      ),
+      child: FocusTraversalGroup(child: const DownloadsScreen()),
     );
   }
 }

@@ -87,6 +87,13 @@ class Episode {
   final String title;
   final String url;
   const Episode({required this.title, required this.url});
+
+  Map<String, dynamic> toJson() => {'title': title, 'url': url};
+
+  factory Episode.fromJson(Map<String, dynamic> j) => Episode(
+        title: (j['title'] as String?) ?? '',
+        url: (j['url'] as String?) ?? '',
+      );
 }
 
 final RegExp _bareNumber = RegExp(r'^\d{1,4}$');
@@ -122,6 +129,20 @@ class PlayLine {
   final String name;
   final List<Episode> episodes;
   const PlayLine({required this.name, required this.episodes});
+
+  Map<String, dynamic> toJson() => {
+        'name': name,
+        'episodes': [for (final e in episodes) e.toJson()],
+      };
+
+  factory PlayLine.fromJson(Map<String, dynamic> j) => PlayLine(
+        name: (j['name'] as String?) ?? '',
+        episodes: (j['episodes'] as List?)
+                ?.whereType<Map>()
+                .map((m) => Episode.fromJson(Map<String, dynamic>.from(m)))
+                .toList() ??
+            const [],
+      );
 }
 
 /// Fully-resolved detail for one source: its play lines + display metadata.
@@ -148,6 +169,35 @@ class VodDetail {
 
   /// Stable key across sources: `sourceId:vodId` (mirrors BearTV resourceKey).
   String get key => '$sourceId:$vodId';
+
+  /// Full snapshot used by offline downloads: a cached episode must be playable
+  /// (and its line/episode indices must match history) even when the source is
+  /// unreachable.
+  Map<String, dynamic> toJson() => {
+        'sourceId': sourceId,
+        'sourceName': sourceName,
+        'vodId': vodId,
+        'title': title,
+        'cover': cover,
+        'desc': desc,
+        'remarks': remarks,
+        'playLines': [for (final l in playLines) l.toJson()],
+      };
+
+  factory VodDetail.fromJson(Map<String, dynamic> j) => VodDetail(
+        sourceId: (j['sourceId'] as String?) ?? '',
+        sourceName: (j['sourceName'] as String?) ?? '',
+        vodId: (j['vodId'] as String?) ?? '',
+        title: (j['title'] as String?) ?? '',
+        cover: (j['cover'] as String?) ?? '',
+        desc: (j['desc'] as String?) ?? '',
+        remarks: (j['remarks'] as String?) ?? '',
+        playLines: (j['playLines'] as List?)
+                ?.whereType<Map>()
+                .map((m) => PlayLine.fromJson(Map<String, dynamic>.from(m)))
+                .toList() ??
+            const [],
+      );
 
   int get episodeCount =>
       playLines.fold(0, (total, line) => total + line.episodes.length);

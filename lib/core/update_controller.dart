@@ -39,8 +39,9 @@ class MethodChannelUpdaterPlatform implements UpdaterPlatform {
 
   @override
   Future<AppVersionInfo> getAppInfo() async {
-    final map = (await _channel.invokeMethod<Map<Object?, Object?>>('getAppInfo')) ??
-        const <Object?, Object?>{};
+    final map =
+        (await _channel.invokeMethod<Map<Object?, Object?>>('getAppInfo')) ??
+            const <Object?, Object?>{};
     return AppVersionInfo(
       versionName: (map['versionName'] as String?) ?? '',
       versionCode: (map['versionCode'] as num?)?.toInt() ?? 0,
@@ -164,10 +165,8 @@ class UpdateController extends ChangeNotifier {
     try {
       final dir = Directory(await _platform.getDownloadDir());
       await dir.create(recursive: true);
-      final file =
-          File('${dir.path}/bear_tv_${release.tagName}_$abi.apk');
-      final size = await _checker.download(release, abi, file,
-          onProgress: (p) {
+      final file = File('${dir.path}/bear_tv_${release.tagName}_$abi.apk');
+      final size = await _checker.download(release, abi, file, onProgress: (p) {
         _progress = p;
         notifyListeners();
       });

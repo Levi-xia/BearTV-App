@@ -55,9 +55,8 @@ void main() {
     client.details['a'] = (_) async => _detail('a');
 
     final repo = VodRepository(client: client);
-    final detail = await repo
-        .resolveByTitle('三体', [_siteA, _siteB])
-        .timeout(const Duration(seconds: 2));
+    final detail = await repo.resolveByTitle(
+        '三体', [_siteA, _siteB]).timeout(const Duration(seconds: 2));
 
     expect(detail, isNotNull);
     expect(detail!.sourceId, 'a');

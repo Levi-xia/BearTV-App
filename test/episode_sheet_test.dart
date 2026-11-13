@@ -83,7 +83,8 @@ VodDetail _detail(int episodes) => VodDetail(
 /// A controller parked in fullscreen on a resolved title.
 AppController _controller({int episodes = 20, int episodeIndex = 0}) {
   final c = AppController(
-    settings: SettingsStore(seedDefaultKey: false, store: MemoryKeyValueStore()),
+    settings:
+        SettingsStore(seedDefaultKey: false, store: MemoryKeyValueStore()),
     player: _IdlePlayer(),
   );
   c.currentItem = _item;
@@ -196,8 +197,7 @@ void main() {
     }
   });
 
-  testWidgets('↑ still opens 播放设置, which no longer hosts 选集',
-      (tester) async {
+  testWidgets('↑ still opens 播放设置, which no longer hosts 选集', (tester) async {
     final c = _controller();
     addTearDown(c.dispose);
     await _pump(tester, c);

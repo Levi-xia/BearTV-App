@@ -13,7 +13,8 @@ abstract class ContentRepository {
 
   /// Resolve a real, playable stream URL (m3u8) for an episode.
   /// TMDB is metadata-only, so this returns null and the mock player fakes it.
-  Future<String?> resolvePlayUrl(VodItem item, int episode, {String line = '线路一'});
+  Future<String?> resolvePlayUrl(VodItem item, int episode,
+      {String line = '线路一'});
 
   /// Search the catalogue by keyword (TMDB `search/multi`). Used by the search
   /// screen; results feed the same `openTitle` → CMS-resolve playback flow as

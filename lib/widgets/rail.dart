@@ -19,6 +19,7 @@ class Rail extends StatelessWidget {
     this.progressForItem,
     this.badgeForItem,
     this.timeForItem,
+    this.onCardPressed,
   });
 
   final String title;
@@ -45,6 +46,9 @@ class Rail extends StatelessWidget {
   final String? Function(VodItem item)? badgeForItem;
   final String? Function(VodItem item)? timeForItem;
 
+  /// Overrides the default "open this title" action per card.
+  final void Function(VodItem item)? onCardPressed;
+
   @override
   Widget build(BuildContext context) {
     return Column(
@@ -58,7 +62,8 @@ class Rail extends StatelessWidget {
           height: AppDims.cardH + 34,
           child: ListView.separated(
             scrollDirection: Axis.horizontal,
-            padding: const EdgeInsets.symmetric(horizontal: AppDims.pad, vertical: 12),
+            padding: const EdgeInsets.symmetric(
+                horizontal: AppDims.pad, vertical: 12),
             itemCount: items.length,
             separatorBuilder: (_, __) => const SizedBox(width: 22),
             itemBuilder: (context, i) => Center(
@@ -66,12 +71,17 @@ class Rail extends StatelessWidget {
                 item: items[i],
                 autofocus: autofocusFirst && i == 0,
                 focusNode: focusNodeForItem?.call(items[i]),
-                onFocused: onCardFocused == null ? null : () => onCardFocused!(items[i]),
+                onFocused: onCardFocused == null
+                    ? null
+                    : () => onCardFocused!(items[i]),
                 onKeyEvent: onCardKeyEvent,
                 onMenu: onCardMenu == null ? null : () => onCardMenu!(items[i]),
                 progress: progressForItem?.call(items[i]),
                 badge: badgeForItem?.call(items[i]),
                 timeLabel: timeForItem?.call(items[i]),
+                onPressed: onCardPressed == null
+                    ? null
+                    : () => onCardPressed!(items[i]),
               ),
             ),
           ),

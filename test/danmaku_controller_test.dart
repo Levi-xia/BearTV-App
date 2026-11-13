@@ -229,8 +229,7 @@ void main() {
       // Trailing slash + duplicate detection; bad scheme rejected.
       expect(await c.addHost('dup', 'http://a/', 't'), '该弹幕源已存在');
       expect(await c.addHost('bad', 'ftp://x', 't'), '地址需以 http 开头');
-      expect(await c.addHost('no-token', 'http://b', ''),
-          '请填写弹幕服务 Token');
+      expect(await c.addHost('no-token', 'http://b', ''), '请填写弹幕服务 Token');
 
       expect(await c.addHost('B', 'http://b', 't'), isNull);
       await c.setDefaultHost(c.hosts.last.id);

@@ -11,7 +11,8 @@ import 'package:bear_tv/data/iptv/iptv_probe.dart';
 /// MEDIA-SEQUENCE advanced 5920911 → 5920924 between two fetches. Deliberately
 /// declares no TARGETDURATION, so a probe driven by it uses the caller's
 /// sample gap verbatim and controller tests can run with a zero gap.
-String _live({required int seq, required String lastSegment, String? pdt}) => '''
+String _live({required int seq, required String lastSegment, String? pdt}) =>
+    '''
 #EXTM3U
 #EXT-X-VERSION:3
 #EXT-X-MEDIA-SEQUENCE:$seq
@@ -161,7 +162,8 @@ http://cdn/x/7.ts
     test('leaves the program date time null when the playlist omits it', () {
       // The overwhelmingly common case: 39 of 41 reachable channels sampled
       // from the shipped playlist carry no such tag at all.
-      expect(parseManifestInfo(_live(seq: 1, lastSegment: 'b.ts')).programDateTime,
+      expect(
+          parseManifestInfo(_live(seq: 1, lastSegment: 'b.ts')).programDateTime,
           isNull);
       expect(parseManifestInfo(_vod).programDateTime, isNull);
     });
@@ -253,7 +255,8 @@ b.ts
       expect(decideVerdict(first: bare, second: bare), LiveVerdict.live);
     });
 
-    test('a second sample that failed to arrive keeps the pass-one verdict', () {
+    test('a second sample that failed to arrive keeps the pass-one verdict',
+        () {
       final a = parseManifestInfo(_live(seq: 1, lastSegment: 'b.ts'));
       expect(decideVerdict(first: a, second: null), LiveVerdict.live);
     });
@@ -269,8 +272,7 @@ b.ts
     test('a fresh program date time is live on the first sample', () {
       // Same playlist shape, a stamp six minutes old — within the live edge of
       // a slow origin, so this must not be accused.
-      final info =
-          parseManifestInfo(_cztv(pdt: '2026-10-12T17:45:00+0800'));
+      final info = parseManifestInfo(_cztv(pdt: '2026-10-12T17:45:00+0800'));
       expect(decideVerdict(first: info, now: _now), LiveVerdict.live);
     });
 
@@ -291,8 +293,8 @@ b.ts
 
     test('a stale stamp stands when the second sample never arrived', () {
       final a = parseManifestInfo(_cztv());
-      expect(decideVerdict(first: a, second: null, now: _now),
-          LiveVerdict.frozen);
+      expect(
+          decideVerdict(first: a, second: null, now: _now), LiveVerdict.frozen);
     });
 
     test('a stamp in the future is not staleness', () {
@@ -310,7 +312,8 @@ b.ts
 
     test('measures how far behind wall clock the newest segment is', () {
       final info = parseManifestInfo(_cztv());
-      expect(programDateTimeAge(info, _now), const Duration(hours: 6870, minutes: 39, seconds: 9));
+      expect(programDateTimeAge(info, _now),
+          const Duration(hours: 6870, minutes: 39, seconds: 9));
     });
 
     test('clamps a stamp from the future to zero', () {
@@ -323,10 +326,14 @@ b.ts
       // drifted origin clock can't invent a fault. _now is 09:51:20Z, so the
       // threshold sits at 08:51:20Z == 16:51:20+0800.
       ManifestInfo at(String pdt) => parseManifestInfo(_cztv(pdt: pdt));
-      expect(staleProgramDateTime(at('2026-10-12T17:45:00+0800'), _now), isFalse);
-      expect(staleProgramDateTime(at('2026-10-12T16:51:20+0800'), _now), isFalse);
-      expect(staleProgramDateTime(at('2026-10-12T16:51:19+0800'), _now), isTrue);
-      expect(staleProgramDateTime(at('2026-10-11T17:45:00+0800'), _now), isTrue);
+      expect(
+          staleProgramDateTime(at('2026-10-12T17:45:00+0800'), _now), isFalse);
+      expect(
+          staleProgramDateTime(at('2026-10-12T16:51:20+0800'), _now), isFalse);
+      expect(
+          staleProgramDateTime(at('2026-10-12T16:51:19+0800'), _now), isTrue);
+      expect(
+          staleProgramDateTime(at('2026-10-11T17:45:00+0800'), _now), isTrue);
     });
   });
 
@@ -449,7 +456,8 @@ b.ts
     });
 
     test('does not mistake a host or port for an extension', () {
-      expect(namesStaticMediaFile('http://1.2.3.4:9901/tsfile/live/0001_1.m3u8'),
+      expect(
+          namesStaticMediaFile('http://1.2.3.4:9901/tsfile/live/0001_1.m3u8'),
           isFalse);
       expect(namesStaticMediaFile(''), isFalse);
       expect(namesStaticMediaFile('not a url'), isFalse);
@@ -515,8 +523,8 @@ b.ts
       );
       addTearDown(client.close);
       expect(
-          await client.fetchChannels(const IptvSource(
-              id: 's', name: 'x', url: 'http://x/movie.mp4')),
+          await client.fetchChannels(
+              const IptvSource(id: 's', name: 'x', url: 'http://x/movie.mp4')),
           isEmpty);
     });
 
@@ -526,12 +534,15 @@ b.ts
       // (`Exhausted heap space, trying to allocate 536870944 bytes`). The read
       // must stop at the cap and drop the socket.
       final client = _EndlessStreamClient();
-      final iptv = IptvClient(client: client, timeout: const Duration(seconds: 10));
+      final iptv =
+          IptvClient(client: client, timeout: const Duration(seconds: 10));
       addTearDown(iptv.close);
 
       final info = await iptv.probeManifest('http://x/live.ts');
-      expect(client.bytesServed,
-          lessThanOrEqualTo(maxManifestBytes + _EndlessStreamClient.defaultChunkSize),
+      expect(
+          client.bytesServed,
+          lessThanOrEqualTo(
+              maxManifestBytes + _EndlessStreamClient.defaultChunkSize),
           reason: 'cap plus at most the one chunk already in flight');
       // '#' is not '#EXTM3U' — a raw stream served under a channel URL.
       expect(info?.isPlaylist, isFalse);
@@ -540,19 +551,21 @@ b.ts
 
     test('an endless source is cut off when loading a playlist too', () async {
       final client = _EndlessStreamClient(chunkSize: 256 * 1024);
-      final iptv = IptvClient(client: client, timeout: const Duration(seconds: 10));
+      final iptv =
+          IptvClient(client: client, timeout: const Duration(seconds: 10));
       addTearDown(iptv.close);
 
       final channels = await iptv.fetchChannels(
           const IptvSource(id: 's', name: 'x', url: 'http://x/stream.ts'));
       expect(channels, isEmpty);
-      expect(client.bytesServed,
-          lessThanOrEqualTo(maxPlaylistBytes + 256 * 1024));
+      expect(
+          client.bytesServed, lessThanOrEqualTo(maxPlaylistBytes + 256 * 1024));
     });
   });
 
   group('LiveProbeController', () {
-    IptvClient clientFor(Future<http.Response> Function(http.Request) handler) =>
+    IptvClient clientFor(
+            Future<http.Response> Function(http.Request) handler) =>
         IptvClient(client: MockClient(handler));
 
     /// A source whose playlist actually rolls between samples — the healthy
@@ -666,7 +679,8 @@ b.ts
       final client = clientFor((_) async {
         calls++;
         if (calls == 1) return http.Response('gone', 502); // dead host
-        return http.Response(_live(seq: calls, lastSegment: 'seg_$calls.ts'), 200);
+        return http.Response(
+            _live(seq: calls, lastSegment: 'seg_$calls.ts'), 200);
       });
       addTearDown(client.close);
       final probe =
@@ -712,7 +726,8 @@ b.ts
           client: client, sampleGap: const Duration(seconds: 30));
       addTearDown(probe.dispose);
 
-      probe.begin('http://ali-m-l.cztv.com/channels/lantian/channel001/1080p.m3u8');
+      probe.begin(
+          'http://ali-m-l.cztv.com/channels/lantian/channel001/1080p.m3u8');
       await _waitFor(probe, LiveVerdict.frozen);
     });
 
@@ -721,7 +736,8 @@ b.ts
       var calls = 0;
       final client = clientFor((_) async {
         calls++;
-        return http.Response(_live(seq: calls, lastSegment: 'seg_$calls.ts'), 200);
+        return http.Response(
+            _live(seq: calls, lastSegment: 'seg_$calls.ts'), 200);
       });
       addTearDown(client.close);
       final probe =
@@ -742,7 +758,8 @@ b.ts
       var calls = 0;
       final client = clientFor((_) async {
         calls++;
-        return http.Response(_live(seq: calls, lastSegment: 'seg_$calls.ts'), 200);
+        return http.Response(
+            _live(seq: calls, lastSegment: 'seg_$calls.ts'), 200);
       });
       addTearDown(client.close);
       final probe =

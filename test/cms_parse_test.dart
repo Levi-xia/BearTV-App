@@ -107,7 +107,8 @@ void main() {
         sourceId: 's',
         sourceName: 'S',
       );
-      expect(detail.playLines.single.episodes.single.url, 'http://c.com/v.m3u8');
+      expect(
+          detail.playLines.single.episodes.single.url, 'http://c.com/v.m3u8');
     });
   });
 
@@ -120,7 +121,9 @@ void main() {
         title: 'T',
         playLines: [
           PlayLine(name: 'a', episodes: [Episode(title: '', url: '')]),
-          PlayLine(name: 'b', episodes: [Episode(title: '1', url: 'http://x/1.m3u8')]),
+          PlayLine(
+              name: 'b',
+              episodes: [Episode(title: '1', url: 'http://x/1.m3u8')]),
         ],
       );
       expect(detail.firstEpisode!.url, 'http://x/1.m3u8');

@@ -157,6 +157,34 @@ void main() {
       expect(overflows, isEmpty, reason: overflows.join('\n---\n'));
     });
 
+    testWidgets('downloads page has no overflow at $size', (tester) async {
+      tester.view.devicePixelRatio = 1.0;
+      tester.view.physicalSize = size;
+      addTearDown(() {
+        tester.view.resetPhysicalSize();
+        tester.view.resetDevicePixelRatio();
+      });
+
+      final c = seeded();
+      addTearDown(c.dispose);
+      await tester.pumpWidget(NebulaApp(controller: c));
+      await _settle(tester);
+      c.openDownloads();
+      await _settle(tester);
+
+      expect(c.page, AppPage.downloads);
+      expect(find.text('下载管理'), findsOneWidget);
+      expect(find.text('全部开始'), findsOneWidget);
+      expect(find.text('全部暂停'), findsOneWidget);
+      expect(find.text('暂无下载任务'), findsOneWidget);
+      expect(overflows, isEmpty, reason: overflows.join('\n---\n'));
+
+      // Back returns to the page the downloads screen was opened from.
+      c.backFromKey();
+      await _settle(tester);
+      expect(c.page, AppPage.home);
+    });
+
     for (final tab in [0, 2]) {
       testWidgets('home tab $tab has no overflow at $size', (tester) async {
         tester.view.devicePixelRatio = 1.0;
@@ -180,7 +208,33 @@ void main() {
     }
   }
 
-  testWidgets('without an API key the home screen prompts to open Settings', (tester) async {
+  testWidgets('我的 has a 下载 section whose entry opens 下载管理', (tester) async {
+    tester.view.devicePixelRatio = 1.0;
+    tester.view.physicalSize = const Size(1280, 720);
+    addTearDown(() {
+      tester.view.resetPhysicalSize();
+      tester.view.resetDevicePixelRatio();
+    });
+
+    final c = seeded();
+    addTearDown(c.dispose);
+    await tester.pumpWidget(NebulaApp(controller: c));
+    await _settle(tester);
+    await c.setTab(0);
+    await _settle(tester);
+
+    // Section title uses the same RailHead treatment as 最近播放.
+    expect(find.text('我的下载'), findsOneWidget);
+    // No storage plugin in the test binding, so the entry reports unavailable.
+    expect(find.text('本地存储不可用，下载功能暂不可用'), findsOneWidget);
+
+    await tester.tap(find.text('下载管理'));
+    await _settle(tester);
+    expect(c.page, AppPage.downloads);
+  });
+
+  testWidgets('without an API key the home screen prompts to open Settings',
+      (tester) async {
     tester.view.devicePixelRatio = 1.0;
     tester.view.physicalSize = const Size(1280, 720);
     addTearDown(() {
@@ -196,6 +250,11 @@ void main() {
 
     expect(c.hasApiKey, isFalse);
     expect(find.text('尚未配置 TMDB API Key'), findsOneWidget);
+
+    // 我的 is local data: the downloads entry must be reachable without a key.
+    AppScope.of(tester.element(find.byType(Shell))).setTab(0, silent: false);
+    await _settle(tester);
+    expect(find.text('下载管理'), findsOneWidget);
 
     // Opening settings swaps in the settings page.
     c.openSettings();

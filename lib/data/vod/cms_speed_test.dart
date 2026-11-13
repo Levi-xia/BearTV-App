@@ -192,9 +192,8 @@ Future<CmsSpeedResult> probeCmsSite(
     final list = decoded['list'] as List;
     return CmsSpeedResult._(
       site: site,
-      status: latency > kCmsSlowLatency
-          ? CmsSpeedStatus.slow
-          : CmsSpeedStatus.ok,
+      status:
+          latency > kCmsSlowLatency ? CmsSpeedStatus.slow : CmsSpeedStatus.ok,
       latency: latency,
       itemCount: list.length,
       m3u8Url: _firstM3u8Url(list),

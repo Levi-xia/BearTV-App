@@ -20,7 +20,8 @@ void main() {
       };
 
   test('maps a movie row into a VodItem', () {
-    final v = mapTmdbItem(movieJson(), fallbackMediaType: 'movie', genreNames: genreNames)!;
+    final v = mapTmdbItem(movieJson(),
+        fallbackMediaType: 'movie', genreNames: genreNames)!;
     expect(v.id, 550);
     expect(v.mediaType, 'movie');
     expect(v.title, '搏击俱乐部');
@@ -55,21 +56,25 @@ void main() {
     expect(v.desc, '暂无简介。'); // empty overview → placeholder
   });
 
-  test('uses fallbackMediaType when media_type is absent (discover endpoints)', () {
+  test('uses fallbackMediaType when media_type is absent (discover endpoints)',
+      () {
     final json = movieJson()..remove('media_type');
-    final v = mapTmdbItem(json, fallbackMediaType: 'movie', genreNames: genreNames)!;
+    final v =
+        mapTmdbItem(json, fallbackMediaType: 'movie', genreNames: genreNames)!;
     expect(v.mediaType, 'movie');
   });
 
   test('poster falls back to backdrop when poster_path is missing', () {
     final json = movieJson()..remove('poster_path');
-    final v = mapTmdbItem(json, fallbackMediaType: 'movie', genreNames: genreNames)!;
+    final v =
+        mapTmdbItem(json, fallbackMediaType: 'movie', genreNames: genreNames)!;
     expect(v.posterUrl, 'https://image.tmdb.org/t/p/w780/backdrop.jpg');
   });
 
   test('missing score renders an em-dash', () {
     final json = movieJson()..['vote_average'] = 0;
-    final v = mapTmdbItem(json, fallbackMediaType: 'movie', genreNames: genreNames)!;
+    final v =
+        mapTmdbItem(json, fallbackMediaType: 'movie', genreNames: genreNames)!;
     expect(v.score, '—');
   });
 

@@ -8,6 +8,9 @@ import 'iptv_controller.dart';
 import 'live_probe_controller.dart';
 import '../data/config_import.dart';
 import '../data/danmaku/danmaku_models.dart';
+import '../data/downloads/download_manager.dart';
+import '../data/downloads/download_models.dart';
+import '../data/downloads/episode_identity.dart';
 import '../data/history_store.dart';
 import '../data/iptv/iptv_models.dart';
 import '../data/models.dart';
@@ -21,7 +24,7 @@ import '../player/player_controller.dart';
 import 'config.dart';
 import 'tab_feed.dart';
 
-enum AppPage { home, play, settings, search }
+enum AppPage { home, play, settings, search, downloads }
 
 /// How the search page resolves results:
 ///   • [tmdb] — search TMDB for metadata, then match a playable CMS stream by
@@ -53,6 +56,7 @@ class AppController extends ChangeNotifier {
     DanmakuController? danmaku,
     IptvController? iptv,
     LiveProbeController? liveProbe,
+    DownloadManager? downloads,
     DateTime Function()? clock,
   })  : _injectedRepo = repository,
         _clock = clock ?? DateTime.now,
@@ -61,7 +65,8 @@ class AppController extends ChangeNotifier {
         settings = settings ?? SettingsStore(),
         vodRepo = vod ?? VodRepository(),
         danmaku = danmaku ?? DanmakuController(),
-        iptv = iptv ?? IptvController() {
+        iptv = iptv ?? IptvController(),
+        downloads = downloads ?? DownloadManager() {
     // Needs the resolved [iptv] to share its HTTP client, so this can't sit in
     // the initializer list above.
     this.liveProbe = liveProbe ?? LiveProbeController(client: this.iptv.client);
@@ -99,6 +104,11 @@ class AppController extends ChangeNotifier {
   /// the small badge, never the home tree or the (non-virtualized) channel list.
   late final LiveProbeController liveProbe;
 
+  /// Offline downloads: queue, grouping, cache lookup and local files. The play
+  /// page and 我的 page read it directly; [AppController] only orchestrates
+  /// cache-first playback and history.
+  final DownloadManager downloads;
+
   /// Whether a usable data source exists (injected repo in tests, or a saved
   /// TMDB key in production).
   bool get hasApiKey => _injectedRepo != null || settings.tmdbApiKey.isNotEmpty;
@@ -130,6 +140,10 @@ class AppController extends ChangeNotifier {
   /// user on home. Home is the default (category cards, 最近播放 / 继续观看 rails).
   AppPage _playReturnPage = AppPage.home;
 
+  /// Where Back from the 下载管理 page should return to (the page it was opened
+  /// from: home/我的, play, …).
+  AppPage _downloadsReturnPage = AppPage.home;
+
   /// When the player was opened from the search page, the [VodItem.key] of the
   /// opened result. The rebuilt [SearchScreen] consumes this on return to move
   /// focus back onto that result card (and clears it). Null when the origin
@@ -153,6 +167,14 @@ class AppController extends ChangeNotifier {
   /// so a Back press closes the overlay (instead of leaving the tab) before the
   /// app-level back logic runs. Returns true when it consumed the Back.
   bool Function()? liveMenuBackInterceptor;
+
+  /// Registered while the play page's download sheet (下载选集) is open, so Back
+  /// closes the sheet instead of leaving the player.
+  bool Function()? playOverlayBackInterceptor;
+
+  /// Registered by the downloads page while its 设置 overlay is open, so Back
+  /// closes the overlay instead of leaving the page.
+  bool Function()? downloadsBackInterceptor;
 
   /// A single physical Back press is delivered on up to TWO channels on some
   /// Android TV embeddings: once as a raw key event (goBack/Esc/browserBack via
@@ -213,6 +235,10 @@ class AppController extends ChangeNotifier {
   String? playError; // set when no source / no resource found
   List<ResourceOption> resourceOptions = const [];
   bool loadingResources = false;
+
+  /// True while the player's current source is a downloaded file rather than
+  /// the CMS url. Drives the 「正在播放缓存内容」 pill.
+  bool playingFromCache = false;
 
   // per-title skip profile (mirrors BearTV skipProfiles)
   bool skipEnabled = false;
@@ -316,6 +342,8 @@ class AppController extends ChangeNotifier {
 
   Future<void> init() async {
     await Future.wait([history.init(), settings.init()]);
+    // Sequential: Hive.initFlutter() must not run concurrently for two boxes.
+    await downloads.init();
     searchHistory = settings.searchHistory;
     danmaku.init(settings);
     iptv.init(settings);
@@ -366,7 +394,8 @@ class AppController extends ChangeNotifier {
 
   void openSettings() {
     if (page == AppPage.settings) return;
-    if (isLiveTab) player.pause(); // don't leave a live stream playing behind it
+    if (isLiveTab)
+      player.pause(); // don't leave a live stream playing behind it
     page = AppPage.settings;
     notifyListeners();
   }
@@ -637,6 +666,18 @@ class AppController extends ChangeNotifier {
   /// and auto-play the best match (resuming a saved position when available).
   Future<void> openTitle(VodItem item) async {
     final token = ++_playToken;
+
+    // 0) A cached episode takes priority. [launchFor] is episode-scoped: it
+    //    only answers for the recorded episode (history) or the first episode
+    //    (fresh open), so a show with some downloads never silently switches
+    //    to the downloaded source for an uncached episode.
+    final entry = history.entryFor(item.key);
+    final launch = downloads.launchFor(item: item, entry: entry);
+    if (launch != null) {
+      await _openFromDownload(item, launch, entry: entry);
+      return;
+    }
+
     _playStarted = false;
     currentItem = item;
     // Remember where we came from so Back leaves the player back to the right
@@ -656,7 +697,6 @@ class AppController extends ChangeNotifier {
     heroBg.value = item.bgUrl;
 
     // Load per-title memory (skip profile, speed) up front.
-    final entry = history.entryFor(item.key);
     skipEnabled = entry?.skipEnabled ?? false;
     introSec = entry?.introSec ?? 0;
     endingSec = entry?.endingSec ?? 0;
@@ -680,17 +720,24 @@ class AppController extends ChangeNotifier {
     }
 
     // 2) Otherwise resolve the best playable resource across enabled sources.
+    //    When the network/source is unavailable, fall back to the download
+    //    snapshot so already-cached episodes still open offline.
     if (detail == null) {
       final sites = selectedSites;
       if (sites.isEmpty) {
-        resolving = false;
-        playError = '尚未启用任何播放源，请在设置中开启或添加。';
-        await player.open(null);
-        notifyListeners();
-        return;
+        detail = downloads.snapshotForEntry(entry);
+        if (detail == null) {
+          resolving = false;
+          playError = '尚未启用任何播放源，请在设置中开启或添加。';
+          await player.open(null);
+          notifyListeners();
+          return;
+        }
+      } else {
+        detail = await vodRepo.resolveByTitle(item.title, sites);
+        if (token != _playToken) return; // superseded by a newer openTitle
+        detail ??= downloads.snapshotForEntry(entry);
       }
-      detail = await vodRepo.resolveByTitle(item.title, sites);
-      if (token != _playToken) return; // superseded by a newer openTitle
     }
 
     if (detail == null || detail.firstEpisode == null) {
@@ -705,13 +752,37 @@ class AppController extends ChangeNotifier {
     // Keep a CMS-direct item's source label in step with the resource that
     // actually resolved (title re-resolve may land on a different source).
     currentItem = _itemWithSource(item, detail.sourceName);
-    // Resume only when the resolved resource matches the saved one.
+    // Resume the recorded episode. Identity (URL path / title) wins over the
+    // stored index so a reordered line or refreshed resource still lands on the
+    // right episode; the resource id isn't required, since a same-episode hit
+    // in another source is what the user expects when the old one is gone.
     var resumeMs = 0;
-    if (entry != null && entry.resourceKey == detail.key) {
-      lineIndex = entry.lineIndex.clamp(0, detail.playLines.length - 1);
-      final eps = _episodesFor(lineIndex).length;
-      episodeIndex = eps == 0 ? 0 : entry.episodeIndex.clamp(0, eps - 1);
-      if (entry.positionMs > 5000) resumeMs = entry.positionMs;
+    final located = entry == null
+        ? null
+        : locateEpisode(
+            detail,
+            episodeUrl: entry.episodeUrl,
+            episodeTitle: entry.episodeTitle,
+            episodeIndex: entry.episodeIndex,
+          );
+    if (entry != null && located != null) {
+      final ep =
+          detail.playLines[located.lineIndex].episodes[located.episodeIndex];
+      final identityMatch = sameEpisode(
+        urlA: ep.url,
+        titleA: ep.title,
+        urlB: entry.episodeUrl,
+        titleB: entry.episodeTitle,
+      );
+      // Old records predate episode identity: fall back to same-resource.
+      final legacyMatch = entry.episodeUrl.isEmpty &&
+          entry.episodeTitle.isEmpty &&
+          entry.resourceKey == detail.key;
+      if (identityMatch || legacyMatch) {
+        lineIndex = located.lineIndex;
+        episodeIndex = located.episodeIndex;
+        if (entry.positionMs > 5000) resumeMs = entry.positionMs;
+      }
     }
     resolving = false;
     notifyListeners();
@@ -754,8 +825,15 @@ class AppController extends ChangeNotifier {
   /// builds the cross-source 切换资源 list by title.
   Future<void> openCmsHit(SearchHit hit) async {
     final token = ++_playToken;
-    _playStarted = false;
     final item = _cmsItemFor(hit);
+    final entry = history.entryFor(item.key);
+    final launch = downloads.launchFor(item: item, entry: entry);
+    if (launch != null) {
+      await _openFromDownload(item, launch, entry: entry);
+      return;
+    }
+
+    _playStarted = false;
     currentItem = item;
     _playReturnPage = page == AppPage.search ? AppPage.search : AppPage.home;
     pendingHomeFocusKey = item.key;
@@ -771,16 +849,19 @@ class AppController extends ChangeNotifier {
     scrolled = true;
     heroBg.value = item.bgUrl;
 
-    final entry = history.entryFor(item.key);
-    skipEnabled = entry?.skipEnabled ?? false;
-    introSec = entry?.introSec ?? 0;
-    endingSec = entry?.endingSec ?? 0;
-    speed = entry?.speed ?? 1.0;
+    final loadedEntry = history.entryFor(item.key);
+    skipEnabled = loadedEntry?.skipEnabled ?? false;
+    introSec = loadedEntry?.introSec ?? 0;
+    endingSec = loadedEntry?.endingSec ?? 0;
+    speed = loadedEntry?.speed ?? 1.0;
     notifyListeners();
 
     final site = _siteById(hit.sourceId);
-    final detail = site == null ? null : await vodRepo.detail(site, hit.vodId);
+    var detail = site == null ? null : await vodRepo.detail(site, hit.vodId);
     if (token != _playToken) return; // superseded by a newer open
+    // Offline / deleted source: cached episodes can still play from the
+    // snapshot taken when they were queued.
+    detail ??= downloads.snapshotFor(hit.sourceId, hit.vodId);
 
     if (detail == null || detail.firstEpisode == null) {
       resolving = false;
@@ -792,13 +873,33 @@ class AppController extends ChangeNotifier {
 
     currentDetail = detail;
     currentItem = _itemWithSource(item, detail.sourceName);
-    // Resume only when re-entering the exact same resource we recorded.
+    // Resume the recorded episode by identity (index only as a fallback).
     var resumeMs = 0;
-    if (entry != null && entry.resourceKey == detail.key) {
-      lineIndex = entry.lineIndex.clamp(0, detail.playLines.length - 1);
-      final eps = _episodesFor(lineIndex).length;
-      episodeIndex = eps == 0 ? 0 : entry.episodeIndex.clamp(0, eps - 1);
-      if (entry.positionMs > 5000) resumeMs = entry.positionMs;
+    final located = entry == null
+        ? null
+        : locateEpisode(
+            detail,
+            episodeUrl: entry.episodeUrl,
+            episodeTitle: entry.episodeTitle,
+            episodeIndex: entry.episodeIndex,
+          );
+    if (entry != null && located != null) {
+      final ep =
+          detail.playLines[located.lineIndex].episodes[located.episodeIndex];
+      final identityMatch = sameEpisode(
+        urlA: ep.url,
+        titleA: ep.title,
+        urlB: entry.episodeUrl,
+        titleB: entry.episodeTitle,
+      );
+      final legacyMatch = entry.episodeUrl.isEmpty &&
+          entry.episodeTitle.isEmpty &&
+          entry.resourceKey == detail.key;
+      if (identityMatch || legacyMatch) {
+        lineIndex = located.lineIndex;
+        episodeIndex = located.episodeIndex;
+        if (entry.positionMs > 5000) resumeMs = entry.positionMs;
+      }
     }
     resolving = false;
     notifyListeners();
@@ -808,8 +909,78 @@ class AppController extends ChangeNotifier {
     _scheduleResourceOptions();
   }
 
+  /// Enter the play page from a downloaded episode. Uses the stored detail
+  /// snapshot as `currentDetail` — no network resolve, works offline, and keeps
+  /// line/episode indices aligned with the history record.
+  Future<void> _openFromDownload(
+    VodItem item,
+    DownloadLaunch launch, {
+    HistoryEntry? entry,
+    AppPage? returnPage,
+  }) async {
+    _playStarted = false;
+    currentItem = item;
+    _playReturnPage =
+        returnPage ?? (page == AppPage.search ? AppPage.search : AppPage.home);
+    pendingHomeFocusKey = item.key;
+    pendingSearchFocusKey = _playReturnPage == AppPage.search ? item.key : null;
+    currentDetail = launch.group.snapshot;
+    resourceOptions = const [];
+    playError = null;
+    resolving = false;
+    lineIndex = launch.task.lineIndex;
+    episodeIndex = launch.task.episodeIndex;
+
+    // The snapshot may have been refreshed/reordered since the task was queued.
+    final located = locateEpisode(
+      launch.group.snapshot,
+      episodeUrl: launch.task.episodeUrl,
+      episodeTitle: launch.task.episodeTitle,
+      episodeIndex: launch.task.episodeIndex,
+    );
+    if (located != null) {
+      lineIndex = located.lineIndex;
+      episodeIndex = located.episodeIndex;
+    }
+
+    skipEnabled = entry?.skipEnabled ?? false;
+    introSec = entry?.introSec ?? 0;
+    endingSec = entry?.endingSec ?? 0;
+    speed = entry?.speed ?? 1.0;
+
+    page = AppPage.play;
+    fullscreen = false;
+    scrolled = true;
+    heroBg.value = item.bgUrl;
+
+    // Only resume when the history record is for the episode we're opening.
+    var resumeMs = 0;
+    if (entry != null && entry.positionMs > 5000) {
+      final ep = _episodeAt(lineIndex, episodeIndex);
+      if (ep != null &&
+          sameEpisode(
+            urlA: ep.url,
+            titleA: ep.title,
+            urlB: entry.episodeUrl,
+            titleB: entry.episodeTitle,
+          )) {
+        resumeMs = entry.positionMs;
+      }
+    }
+    notifyListeners();
+
+    await _playCurrent(resumeMs: resumeMs);
+    _scheduleResourceOptions();
+  }
+
   /// Open the current (lineIndex/episodeIndex) episode in the player.
-  Future<void> _playCurrent({int resumeMs = 0}) async {
+  ///
+  /// Single URL→player path for the play page: every episode switch, line
+  /// switch, source switch and cache deletion-fallback goes through here. A
+  /// cached episode always wins; its loopback URL is tried first, then the
+  /// plain `file://` one, and only when both fail does the stream fall back to
+  /// the online URL.
+  Future<void> _playCurrent({int resumeMs = 0, bool autoPlay = true}) async {
     _introSkipHandled = false;
     _advancing = false;
     // Not "playing" until the stream is ready AND the resume seek has landed:
@@ -818,11 +989,46 @@ class AppController extends ChangeNotifier {
     _playStarted = false;
     _lastSaveMs = _nowMs();
     final ep = _episodeAt(lineIndex, episodeIndex);
+    final d = currentDetail;
+    final locals = (d == null || ep == null)
+        ? const <String>[]
+        : downloads.localUrlsFor(
+            sourceId: d.sourceId,
+            vodId: d.vodId,
+            episodeUrl: ep.url,
+            episodeTitle: ep.title,
+            episodeIndex: episodeIndex,
+          );
+    playingFromCache = locals.isNotEmpty;
+    if (locals.isNotEmpty) notifyListeners(); // show the pill immediately
     // Kick danmaku off first: it's an independent HTTP pipeline and must not
     // queue behind the video open/seek/play calls (it used to start only after
     // `play()`, which put the match round-trips behind the stream startup).
     _loadDanmakuForCurrentEpisode();
-    await player.open(ep?.url);
+    if (locals.isEmpty) {
+      await player.open(ep?.url);
+    } else {
+      // Loopback HTTP first, then `file://`. Only when both transports fail
+      // does the episode drop back to the online stream.
+      var localReady = false;
+      for (final url in locals) {
+        await player.open(url);
+        if (player.value.ready) {
+          localReady = true;
+          break;
+        }
+        debugPrint('[play] local open failed: $url');
+      }
+      if (!localReady) {
+        final online = ep?.url ?? '';
+        if (online.isNotEmpty) {
+          playingFromCache = false;
+          showToast('缓存播放失败，已切换在线播放');
+          notifyListeners();
+          await player.open(online);
+        }
+      }
+    }
     if (resumeMs > 0) await player.seekTo(Duration(milliseconds: resumeMs));
     // Arm progress saving only once the reported position means something.
     if (player.value.ready) {
@@ -830,7 +1036,180 @@ class AppController extends ChangeNotifier {
       _lastSaveMs = _nowMs(); // start the throttle window after the seek
     }
     await player.setSpeed(speed);
-    await player.play();
+    if (autoPlay) await player.play();
+  }
+
+  // --- Offline downloads ----------------------------------------------------
+
+  /// Whether the episode currently on screen has a completed local copy.
+  /// Drives the 下载 sheet's 「已缓存」 badges and the play page chip.
+  bool get currentEpisodeCached {
+    final d = currentDetail;
+    final ep = _episodeAt(lineIndex, episodeIndex);
+    if (d == null || ep == null) return false;
+    return downloads.isEpisodeCached(
+      sourceId: d.sourceId,
+      vodId: d.vodId,
+      episodeUrl: ep.url,
+      episodeTitle: ep.title,
+      episodeIndex: episodeIndex,
+    );
+  }
+
+  /// Queue the selected episodes of the current play line. Returns false when
+  /// nothing was added (storage unavailable / all already queued).
+  Future<bool> downloadEpisodes(List<int> indices) async {
+    final item = currentItem;
+    final d = currentDetail;
+    if (item == null || d == null || indices.isEmpty) return false;
+    if (!downloads.available) {
+      showToast('本地存储不可用，无法下载');
+      return false;
+    }
+    try {
+      final added = await downloads.enqueue(DownloadRequest(
+        item: item,
+        detail: d,
+        lineIndex: lineIndex,
+        episodeIndices: indices,
+      ));
+      showToast(added == 0 ? '所选剧集已在下载列表中' : '已添加 $added 集到下载任务');
+      return added > 0;
+    } catch (e) {
+      showToast(e.toString());
+      return false;
+    }
+  }
+
+  /// Open the 下载管理 page. Pauses (but doesn't release) the player so live
+  /// playback doesn't keep decoding behind the overlay.
+  void openDownloads() {
+    if (page == AppPage.downloads) return;
+    _downloadsReturnPage = page;
+    if (page == AppPage.play) player.pause();
+    page = AppPage.downloads;
+    fullscreen = false;
+    notifyListeners();
+  }
+
+  /// Play a completed download from the 下载管理 page. Back returns to the
+  /// downloads page, not home.
+  Future<void> openDownloadEpisode(DownloadTask task) async {
+    final group = downloads.groupForTask(task.id);
+    if (group == null) return;
+    final entry = history.entryFor(task.itemKey);
+    await _openFromDownload(
+      task.item,
+      DownloadLaunch(group: group, task: task),
+      entry: entry,
+      returnPage: AppPage.downloads,
+    );
+  }
+
+  /// Delete one downloaded episode. If it's the episode currently loaded from
+  /// cache, the player is moved back to the online url at the same position so
+  /// returning to the play page never references a deleted file.
+  Future<void> deleteDownload(DownloadTask task) async {
+    final wasCurrent = _isCurrentEpisode(task);
+    final wasCachePlaying = playingFromCache;
+    final wasPlaying = player.value.playing;
+    final position = player.value.position.inMilliseconds;
+    if (wasCurrent && wasCachePlaying) {
+      _persistHistory(
+        positionMs: position,
+        durationMs: player.value.duration.inMilliseconds,
+      );
+    }
+    await downloads.remove(task.id);
+    if (wasCurrent && wasCachePlaying) {
+      await _reopenAfterCacheRemoval(
+        positionMs: position,
+        wasPlaying: wasPlaying,
+      );
+    }
+  }
+
+  /// Delete every download of a resource group (剧 + 来源).
+  Future<void> deleteDownloadGroup(DownloadGroup group) async {
+    final wasCurrent = currentDetail?.key == group.key;
+    final wasCachePlaying = playingFromCache;
+    final wasPlaying = player.value.playing;
+    final position = player.value.position.inMilliseconds;
+    if (wasCurrent && wasCachePlaying) {
+      _persistHistory(
+        positionMs: position,
+        durationMs: player.value.duration.inMilliseconds,
+      );
+    }
+    await downloads.removeGroup(group.key);
+    if (wasCurrent && wasCachePlaying) {
+      await _reopenAfterCacheRemoval(
+        positionMs: position,
+        wasPlaying: wasPlaying,
+      );
+    }
+  }
+
+  /// 清空已完成: removes every completed task (and its files). Falls back to
+  /// online playback when the episode currently loaded is one of them.
+  Future<void> clearCompletedDownloads() async {
+    final d = currentDetail;
+    final ep = _episodeAt(lineIndex, episodeIndex);
+    final currentTask = (d == null || ep == null)
+        ? null
+        : downloads.completedTaskFor(
+            sourceId: d.sourceId,
+            vodId: d.vodId,
+            episodeUrl: ep.url,
+            episodeTitle: ep.title,
+            episodeIndex: episodeIndex,
+          );
+    final wasCachePlaying = playingFromCache && currentTask != null;
+    final wasPlaying = player.value.playing;
+    final position = player.value.position.inMilliseconds;
+    if (wasCachePlaying) {
+      _persistHistory(
+        positionMs: position,
+        durationMs: player.value.duration.inMilliseconds,
+      );
+    }
+    await downloads.clearCompleted();
+    if (wasCachePlaying) {
+      await _reopenAfterCacheRemoval(
+        positionMs: position,
+        wasPlaying: wasPlaying,
+      );
+    }
+  }
+
+  bool _isCurrentEpisode(DownloadTask task) {
+    final d = currentDetail;
+    return d != null &&
+        d.key == task.groupKey &&
+        lineIndex == task.lineIndex &&
+        episodeIndex == task.episodeIndex;
+  }
+
+  Future<void> _reopenAfterCacheRemoval({
+    required int positionMs,
+    required bool wasPlaying,
+  }) async {
+    playingFromCache = false;
+    final ep = _episodeAt(lineIndex, episodeIndex);
+    if (ep == null || ep.url.trim().isEmpty) {
+      playError = '缓存已删除，且没有可用的在线地址';
+      _playStarted = false;
+      await player.open(null);
+      notifyListeners();
+      return;
+    }
+    playError = null;
+    showToast('已删除缓存，已切换在线播放');
+    await _playCurrent(
+      resumeMs: positionMs,
+      autoPlay: page == AppPage.play && wasPlaying,
+    );
+    notifyListeners();
   }
 
   /// Best-effort danmaku match for the current episode (never blocks playback,
@@ -1056,6 +1435,10 @@ class AppController extends ChangeNotifier {
     if (item == null) return;
     final d = currentDetail;
     final prev = history.entryFor(item.key);
+    // Episode identity is recorded so a later cache lookup / resume can find
+    // the same episode even if the line was reordered. Never store the local
+    // file path here: history must always allow an online fallback.
+    final ep = _episodeAt(lineIndex, episodeIndex);
     history.put(HistoryEntry(
       // A CMS-direct item's genre is its source name; persist the currently
       // playing source so the history card's meta line matches the record.
@@ -1065,6 +1448,8 @@ class AppController extends ChangeNotifier {
       vodId: d?.vodId ?? prev?.vodId ?? '',
       lineIndex: lineIndex,
       episodeIndex: episodeIndex,
+      episodeTitle: ep?.title ?? prev?.episodeTitle ?? '',
+      episodeUrl: ep?.url ?? prev?.episodeUrl ?? '',
       positionMs: positionMs ?? prev?.positionMs ?? 0,
       durationMs: durationMs ?? prev?.durationMs ?? 0,
       skipEnabled: skipEnabled,
@@ -1241,6 +1626,26 @@ class AppController extends ChangeNotifier {
     // The inline 直播 overlay (channel switcher) closes on Back before anything
     // else — otherwise Back would fall through to the leave-tab / exit flow.
     if (liveMenuBackInterceptor?.call() ?? false) return;
+    // The play page's download sheet closes first.
+    if (page == AppPage.play && (playOverlayBackInterceptor?.call() ?? false)) {
+      return;
+    }
+    // The downloads page's 设置 overlay closes before the page itself.
+    if (page == AppPage.downloads &&
+        (downloadsBackInterceptor?.call() ?? false)) {
+      return;
+    }
+    if (page == AppPage.downloads) {
+      page = _downloadsReturnPage;
+      if (page == AppPage.play) {
+        // Returned to a paused playback: keep the position, resume playback.
+        player.play();
+      } else if (page == AppPage.home) {
+        homeFocusRequest.value++;
+      }
+      notifyListeners();
+      return;
+    }
     if (page == AppPage.play) {
       // Only a playback that actually started may rewrite the record. Backing
       // out while the title is still resolving (or after the open failed) used
@@ -1258,6 +1663,10 @@ class AppController extends ChangeNotifier {
         // NOT go through openSearch(), which would wipe the results.
         page = AppPage.search;
         pendingHomeFocusKey = null; // not returning to home
+        notifyListeners();
+      } else if (_playReturnPage == AppPage.downloads) {
+        page = AppPage.downloads;
+        pendingHomeFocusKey = null;
         notifyListeners();
       } else {
         page = AppPage.home;
@@ -1300,6 +1709,7 @@ class AppController extends ChangeNotifier {
     _playToken++; // invalidate pending openTitle/switchResource async work
     _playStarted = false;
     resolving = false;
+    playingFromCache = false;
     danmaku.clear();
     player.pause();
     player.open(null); // VideoAdapter disposes the inner controller here
@@ -1367,6 +1777,7 @@ class AppController extends ChangeNotifier {
     }
     (_builtRepo as TmdbRepository?)?.close();
     vodRepo.close();
+    downloads.dispose();
     heroBg.dispose();
     toast.dispose();
     homeFocusRequest.dispose();

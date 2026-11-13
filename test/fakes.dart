@@ -9,7 +9,8 @@ class FakeRepo implements ContentRepository {
   final int maxPages;
   final List<String> calls = [];
 
-  int callsFor(int tab, int page) => calls.where((c) => c == '$tab:$page').length;
+  int callsFor(int tab, int page) =>
+      calls.where((c) => c == '$tab:$page').length;
 
   @override
   Future<FeedPage> loadFeed(int tabIndex, int page, {int sort = 0}) async {
@@ -40,7 +41,9 @@ class FakeRepo implements ContentRepository {
   Future<VodItem> loadDetail(VodItem item) async => item;
 
   @override
-  Future<String?> resolvePlayUrl(VodItem item, int episode, {String line = '线路一'}) async => null;
+  Future<String?> resolvePlayUrl(VodItem item, int episode,
+          {String line = '线路一'}) async =>
+      null;
 
   @override
   Future<FeedPage> search(String query, int page) async =>
