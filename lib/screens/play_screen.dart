@@ -16,6 +16,7 @@ import '../widgets/chips.dart';
 import '../widgets/danmaku_overlay.dart';
 import '../widgets/episode_pager.dart';
 import '../widgets/focusable.dart';
+import '../widgets/focus_fx.dart';
 import '../widgets/net_image.dart';
 import '../widgets/on_screen_keyboard.dart';
 import 'download_sheet.dart';
@@ -46,40 +47,61 @@ class _PlayScreenState extends State<PlayScreen> {
   // goes fullscreen — rather than drifting onto a side-panel control.
   final FocusNode _playerNode = FocusNode(debugLabel: 'playPlayerSurface');
 
-  // 下载选集 sheet, opened from the side panel. Back closes it first.
+  // 下载选集 sheet, opened from the side panel / fullscreen menu. Back closes it
+  // first.
   bool _downloadOpen = false;
+  // Floating control sheet for one side-panel action (线路 / 切换资源 / 倍速 …).
+  _PlayAction? _action;
   late final AppController _app;
-  late final bool Function() _downloadBackInterceptor;
+  late final bool Function() _overlayBackInterceptor;
 
   @override
   void initState() {
     super.initState();
     _app = AppScope.read(context);
-    _downloadBackInterceptor = () {
-      if (!_downloadOpen) return false;
-      _closeDownloadSheet();
-      return true;
+    _overlayBackInterceptor = () {
+      if (_downloadOpen) {
+        _closeDownloadSheet();
+        return true;
+      }
+      if (_action != null) {
+        _closeAction();
+        return true;
+      }
+      return false;
     };
-    _app.playOverlayBackInterceptor = _downloadBackInterceptor;
+    _app.playOverlayBackInterceptor = _overlayBackInterceptor;
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted) _playerNode.requestFocus();
     });
   }
 
-  void _openDownloadSheet() {
-    if (_downloadOpen) return;
-    setState(() => _downloadOpen = true);
+  void _openAction(_PlayAction action) {
+    if (action == _PlayAction.download) {
+      if (_downloadOpen) return;
+      setState(() => _downloadOpen = true);
+      return;
+    }
+    if (_action == action) return;
+    setState(() => _action = action);
+  }
+
+  void _closeAction() {
+    if (_action == null) return;
+    setState(() => _action = null);
+    _panelNode.requestFocus();
   }
 
   void _closeDownloadSheet() {
     if (!_downloadOpen) return;
     setState(() => _downloadOpen = false);
-    _playerNode.requestFocus();
+    // Both sheets are opened from a tile, so hand focus back to the grid.
+    _panelNode.requestFocus();
   }
 
   @override
   void dispose() {
-    if (_app.playOverlayBackInterceptor == _downloadBackInterceptor) {
+    if (_app.playOverlayBackInterceptor == _overlayBackInterceptor) {
       _app.playOverlayBackInterceptor = null;
     }
     _panelNode.dispose();
@@ -118,17 +140,27 @@ class _PlayScreenState extends State<PlayScreen> {
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       Expanded(
-                          child: AspectRatio(
-                              aspectRatio: 16 / 9,
-                              child: _Player(
-                                  playerNode: _playerNode,
-                                  panelNode: _panelNode))),
-                      const SizedBox(width: 30),
+                        // The player used to fill the whole row (≈1400px wide
+                        // at 1080p), which dwarfed the controls. Cap it so the
+                        // right panel reads as an equal half of the page.
+                        child: Align(
+                          alignment: Alignment.topLeft,
+                          child: ConstrainedBox(
+                            constraints: const BoxConstraints(maxWidth: 1040),
+                            child: AspectRatio(
+                                aspectRatio: 16 / 9,
+                                child: _Player(
+                                    playerNode: _playerNode,
+                                    panelNode: _panelNode)),
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 34),
                       SizedBox(
                         width: AppDims.sideW,
                         child: _SidePanel(
                           panelNode: _panelNode,
-                          onOpenDownloads: _openDownloadSheet,
+                          onOpenAction: _openAction,
                         ),
                       ),
                     ],
@@ -140,6 +172,7 @@ class _PlayScreenState extends State<PlayScreen> {
             ),
           ),
         ),
+        if (_action != null) _ActionSheet(action: _action!),
         if (_downloadOpen) DownloadSheet(onClose: _closeDownloadSheet),
       ],
     );
@@ -521,10 +554,14 @@ class _ProgressBar extends StatelessWidget {
 
 /// Right-hand detail + controls column. Renders safely while a resource is
 /// still being resolved (`currentDetail == null`).
+///
+/// The controls are an [_ActionGrid] of icon tiles; each one opens a floating
+/// [_ActionSheet]. The old always-expanded chip lists made this column so tall
+/// that half of it ran off screen on a 1080p TV.
 class _SidePanel extends StatelessWidget {
-  const _SidePanel({required this.panelNode, required this.onOpenDownloads});
+  const _SidePanel({required this.panelNode, required this.onOpenAction});
   final FocusNode panelNode;
-  final VoidCallback onOpenDownloads;
+  final void Function(_PlayAction) onOpenAction;
 
   @override
   Widget build(BuildContext context) {
@@ -534,11 +571,6 @@ class _SidePanel extends StatelessWidget {
     final detail = app.currentDetail;
     final desc =
         (detail != null && detail.desc.isNotEmpty) ? detail.desc : item.desc;
-
-    // Route the player's Right key onto the topmost control that's actually
-    // rendered: 线路 → 切换资源 → 倍速 (倍速 is always present as a fallback).
-    final hasLines = detail != null && detail.playLines.length > 1;
-    final hasOptions = app.resourceOptions.isNotEmpty;
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -583,76 +615,250 @@ class _SidePanel extends StatelessWidget {
           ),
         ],
         const _Hr(),
-        if (hasLines) ...[
-          const _Label('线路'),
-          const SizedBox(height: 10),
-          Wrap(
-            spacing: 10,
-            runSpacing: 10,
-            children: [
-              for (var i = 0; i < detail.playLines.length; i++)
-                SelectableChip(
-                  label: detail.playLines[i].name,
-                  selected: i == app.lineIndex,
-                  focusNode: i == 0 ? panelNode : null,
-                  onPressed: () => app.selectLine(i),
-                ),
-            ],
-          ),
-          const SizedBox(height: 18),
-        ],
-        _SwitchResourceSection(
-            firstNode: (!hasLines && hasOptions) ? panelNode : null),
-        _DownloadSection(
-          firstNode: (!hasLines && !hasOptions) ? panelNode : null,
-          onOpen: onOpenDownloads,
-        ),
-        const _SpeedSection(),
-        const _SkipSection(),
-        const _DanmakuSection(),
+        // The player's Right key lands on the first tile, whatever it is.
+        _ActionGrid(firstNode: panelNode, onOpen: onOpenAction),
       ],
     );
   }
 }
 
-/// 下载 entry: queue episodes of the current line, or jump to 下载管理. When the
-/// episode on screen is already cached the chip says so (it still opens the
-/// sheet, so the user can download more episodes).
-class _DownloadSection extends StatelessWidget {
-  const _DownloadSection({this.firstNode, required this.onOpen});
+/// The side panel's controls. One icon tile per action; the grid wraps onto
+/// another row when the panel (or the fullscreen dock) is too narrow. Tiles are
+/// glyph-only — the sheet each opens names the action — so the whole panel stays
+/// one glance wide on a TV.
+enum _PlayAction {
+  sources('切换资源', Icons.swap_horiz),
+  download('下载', Icons.download_rounded),
+  speed('倍速', Icons.speed_rounded),
+  skip('片头片尾', Icons.skip_next_rounded),
+  danmaku('弹幕', Icons.subtitles_rounded);
+
+  const _PlayAction(this.label, this.icon);
+
+  final String label;
+  final IconData icon;
+
+  /// Sheet heading — the tile stays short (片头片尾) while the sheet is explicit.
+  String get sheetTitle => this == _PlayAction.skip ? '片头片尾跳过' : label;
+}
+
+const double _kActionTile = 76;
+
+class _ActionGrid extends StatelessWidget {
+  const _ActionGrid({this.firstNode, required this.onOpen});
 
   final FocusNode? firstNode;
-  final VoidCallback onOpen;
+  final void Function(_PlayAction) onOpen;
+
+  static const double _gap = 12;
 
   @override
   Widget build(BuildContext context) {
     final app = AppScope.of(context);
-    final cached = app.currentEpisodeCached;
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
+    final detail = app.currentDetail;
+    final hasLines = detail != null && detail.playLines.length > 1;
+    final actions = <_PlayAction>[
+      // 线路 and 其他资源 are the same choice ("what am I watching from?"), so
+      // they share one entry; offer it as soon as either has something to pick.
+      if (hasLines || app.resourceOptions.isNotEmpty || app.loadingResources)
+        _PlayAction.sources,
+      _PlayAction.download,
+      _PlayAction.speed,
+      _PlayAction.skip,
+      _PlayAction.danmaku,
+    ];
+    return Wrap(
+      spacing: _gap,
+      runSpacing: _gap,
       children: [
-        const _Label('下载'),
-        const SizedBox(height: 10),
-        Wrap(
-          spacing: 10,
-          runSpacing: 10,
-          children: [
-            SelectableChip(
-              label: cached ? '已缓存 · 下载其他集' : '下载选集',
-              selected: cached,
-              focusNode: firstNode,
-              onPressed: onOpen,
-            ),
-            SelectableChip(
-              label: '下载管理',
-              selected: false,
-              onPressed: app.openDownloads,
-            ),
-          ],
-        ),
-        const SizedBox(height: 18),
+        for (var i = 0; i < actions.length; i++)
+          _ActionTile(
+            key: ValueKey('playAction:${actions[i].name}'),
+            action: actions[i],
+            focusNode: i == 0 ? firstNode : null,
+            onPressed: () => onOpen(actions[i]),
+          ),
       ],
     );
+  }
+}
+
+/// Square icon-only tile: the glyph is the label, so nothing in the grid
+/// competes with the artwork for the eye. Focus uses the app's usual glass →
+/// gradient-pill language.
+class _ActionTile extends StatelessWidget {
+  const _ActionTile({
+    super.key,
+    required this.action,
+    required this.onPressed,
+    this.focusNode,
+  });
+
+  final _PlayAction action;
+  final VoidCallback onPressed;
+  final FocusNode? focusNode;
+
+  @override
+  Widget build(BuildContext context) {
+    return Semantics(
+      button: true,
+      label: action.label,
+      child: Focusable(
+        focusNode: focusNode,
+        onPressed: onPressed,
+        builder: (context, focused) {
+          final base = BoxDecoration(
+            color: AppColors.glass,
+            borderRadius: BorderRadius.circular(16),
+            border: Border.all(color: AppColors.hairline),
+          );
+          return FocusFx.scale(
+            focused,
+            Container(
+              width: _kActionTile,
+              height: _kActionTile,
+              alignment: Alignment.center,
+              decoration: focused ? FocusFx.pill(focused, radius: 16) : base,
+              child: Icon(
+                action.icon,
+                size: 32,
+                color: focused ? AppColors.focusInk : AppColors.accent2,
+              ),
+            ),
+          );
+        },
+      ),
+    );
+  }
+}
+
+/// Floating sheet for one [_PlayAction]. It carries its own [FocusScope] so
+/// arrows stay inside while it is open. Back — routed through
+/// [AppController.playOverlayBackInterceptor] — closes it, so there is no 关闭
+/// button to tab through; the first control takes focus on open.
+class _ActionSheet extends StatefulWidget {
+  const _ActionSheet({required this.action});
+
+  final _PlayAction action;
+
+  @override
+  State<_ActionSheet> createState() => _ActionSheetState();
+}
+
+class _ActionSheetState extends State<_ActionSheet> {
+  final FocusScopeNode _scope = FocusScopeNode(debugLabel: 'playActionSheet');
+
+  /// True once a leaf inside the sheet took focus. A sheet can open before it
+  /// has anything to focus (切换资源 while the cross-source search runs), so
+  /// [build] retries until this flips.
+  bool _claimed = false;
+
+  @override
+  void initState() {
+    super.initState();
+    // Autofocus on a FocusScope only focuses the scope node itself, which has
+    // no action of its own: OK and the arrows did nothing until a leaf was
+    // focused. Move into the first control explicitly, after the frame that
+    // attaches it.
+    WidgetsBinding.instance.addPostFrameCallback((_) => _claimFirstFocus());
+  }
+
+  void _claimFirstFocus() {
+    if (!mounted || _claimed) return;
+    _scope.requestFocus();
+    // False when nothing inside is focusable yet; the next build retries.
+    _claimed = _scope.nextFocus();
+  }
+
+  @override
+  void dispose() {
+    _scope.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    // 切换资源 can open while the search is still running: keep claiming focus
+    // as results land so the first chip becomes usable without a pointer.
+    if (!_claimed) {
+      WidgetsBinding.instance.addPostFrameCallback((_) => _claimFirstFocus());
+    }
+    return Positioned.fill(
+      child: ColoredBox(
+        color: const Color(0xCC03060E),
+        child: FocusScope(
+          node: _scope,
+          child: FocusTraversalGroup(
+            child: Center(
+              child: Container(
+                width: 720,
+                constraints: BoxConstraints(
+                    maxHeight: MediaQuery.sizeOf(context).height * 0.72),
+                padding: const EdgeInsets.fromLTRB(30, 24, 30, 28),
+                decoration: BoxDecoration(
+                  color: AppColors.cardBg,
+                  borderRadius: BorderRadius.circular(22),
+                  border: Border.all(color: AppColors.hairline),
+                  boxShadow: const [
+                    BoxShadow(
+                        color: Color(0x99000000),
+                        blurRadius: 60,
+                        offset: Offset(0, 24)),
+                  ],
+                ),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        Icon(widget.action.icon,
+                            size: 22, color: AppColors.accent2),
+                        const SizedBox(width: 10),
+                        Text(
+                          widget.action.sheetTitle,
+                          style: const TextStyle(
+                              fontSize: 21,
+                              fontWeight: FontWeight.w700,
+                              color: AppColors.text,
+                              fontFamilyFallback: kFontFallback),
+                        ),
+                        const Spacer(),
+                        const Text('返回关闭',
+                            style: TextStyle(
+                                fontSize: 14,
+                                color: AppColors.textDim,
+                                fontFamilyFallback: kFontFallback)),
+                      ],
+                    ),
+                    const SizedBox(height: 18),
+                    Flexible(
+                      child: SingleChildScrollView(child: _body()),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _body() {
+    switch (widget.action) {
+      case _PlayAction.sources:
+        return const _SwitchResourceSection();
+      case _PlayAction.speed:
+        return const _SpeedSection(showLabel: false);
+      case _PlayAction.skip:
+        return const _SkipSection(showLabel: false);
+      case _PlayAction.danmaku:
+        return const _DanmakuSection(showLabel: false);
+      case _PlayAction.download:
+        // Handled by PlayScreen: 下载 opens the episode sheet directly.
+        return const SizedBox.shrink();
+    }
   }
 }
 
@@ -720,34 +926,42 @@ class _Hr extends StatelessWidget {
 }
 
 /// 切换资源: cross-source candidates. Hidden until at least one is found.
+/// 切换资源 sheet body: the current resource's play lines (when it exposes more
+/// than one) and the same title offered by other sources, under one entry —
+/// both answer the same question, "what am I watching from?".
 class _SwitchResourceSection extends StatelessWidget {
-  const _SwitchResourceSection({this.firstNode});
-  final FocusNode? firstNode;
+  const _SwitchResourceSection();
 
   @override
   Widget build(BuildContext context) {
     final app = AppScope.of(context);
+    final detail = app.currentDetail;
+    final lines = detail?.playLines ?? const <PlayLine>[];
     final opts = app.resourceOptions;
-    if (opts.isEmpty) {
-      if (app.loadingResources) {
-        return const Padding(
-          padding: EdgeInsets.only(bottom: 18),
-          child: Text('正在查找其他资源…',
-              style: TextStyle(
-                  fontSize: 14,
-                  color: AppColors.textDim,
-                  fontFamilyFallback: kFontFallback)),
-        );
-      }
-      return const SizedBox.shrink();
-    }
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       mainAxisSize: MainAxisSize.min,
       children: [
+        if (lines.length > 1) ...[
+          const _Label('线路'),
+          const SizedBox(height: 10),
+          Wrap(
+            spacing: 10,
+            runSpacing: 10,
+            children: [
+              for (var i = 0; i < lines.length; i++)
+                SelectableChip(
+                  label: lines[i].name,
+                  selected: i == app.lineIndex,
+                  onPressed: () => app.selectLine(i),
+                ),
+            ],
+          ),
+          const SizedBox(height: 22),
+        ],
         Row(
           children: [
-            const _Label('切换资源'),
+            const _Label('其他资源'),
             const SizedBox(width: 10),
             if (app.loadingResources)
               const Text('查找中…',
@@ -758,30 +972,38 @@ class _SwitchResourceSection extends StatelessWidget {
           ],
         ),
         const SizedBox(height: 10),
-        Wrap(
-          spacing: 10,
-          runSpacing: 10,
-          children: [
-            for (var i = 0; i < opts.length; i++)
-              SelectableChip(
-                label: opts[i].episodeCount > 0
-                    ? '${opts[i].sourceName} · ${opts[i].episodeCount}集'
-                    : opts[i].sourceName,
-                selected: opts[i].isCurrent,
-                focusNode: i == 0 ? firstNode : null,
-                onPressed: () => app.switchResource(opts[i]),
-              ),
-          ],
-        ),
-        const SizedBox(height: 18),
+        if (opts.isEmpty)
+          Text(
+            app.loadingResources ? '正在查找其他资源…' : '没有找到其他资源',
+            style: const TextStyle(
+                fontSize: 14,
+                color: AppColors.textDim,
+                fontFamilyFallback: kFontFallback),
+          )
+        else
+          Wrap(
+            spacing: 10,
+            runSpacing: 10,
+            children: [
+              for (var i = 0; i < opts.length; i++)
+                SelectableChip(
+                  label: opts[i].episodeCount > 0
+                      ? '${opts[i].sourceName} · ${opts[i].episodeCount}集'
+                      : opts[i].sourceName,
+                  selected: opts[i].isCurrent,
+                  onPressed: () => app.switchResource(opts[i]),
+                ),
+            ],
+          ),
       ],
     );
   }
 }
 
-/// 倍速 chips.
+/// 倍速 chips. [showLabel] is false inside an [_ActionSheet].
 class _SpeedSection extends StatelessWidget {
-  const _SpeedSection();
+  const _SpeedSection({this.showLabel = true});
+  final bool showLabel;
 
   @override
   Widget build(BuildContext context) {
@@ -790,8 +1012,10 @@ class _SpeedSection extends StatelessWidget {
       crossAxisAlignment: CrossAxisAlignment.start,
       mainAxisSize: MainAxisSize.min,
       children: [
-        const _Label('倍速'),
-        const SizedBox(height: 10),
+        if (showLabel) ...[
+          const _Label('倍速'),
+          const SizedBox(height: 10),
+        ],
         Wrap(
           spacing: 10,
           runSpacing: 10,
@@ -813,7 +1037,8 @@ class _SpeedSection extends StatelessWidget {
 
 /// 片头片尾跳过: on/off chip + intro/ending second steppers.
 class _SkipSection extends StatelessWidget {
-  const _SkipSection();
+  const _SkipSection({this.showLabel = true});
+  final bool showLabel;
 
   @override
   Widget build(BuildContext context) {
@@ -822,8 +1047,10 @@ class _SkipSection extends StatelessWidget {
       crossAxisAlignment: CrossAxisAlignment.start,
       mainAxisSize: MainAxisSize.min,
       children: [
-        const _Label('片头片尾跳过'),
-        const SizedBox(height: 10),
+        if (showLabel) ...[
+          const _Label('片头片尾跳过'),
+          const SizedBox(height: 10),
+        ],
         SelectableChip(
           label: app.skipEnabled ? '已开启' : '已关闭',
           selected: app.skipEnabled,
@@ -952,11 +1179,16 @@ class _FullscreenPlayerState extends State<_FullscreenPlayer> {
   bool _episodesOpen = false;
   // 下载选集 sheet, opened from the settings menu.
   bool _downloadOpen = false;
+  // Floating control sheet for one action tile, nested inside the menu.
+  _PlayAction? _action;
   bool _showProgress = false;
   // Focus anchor for this layer. Overlays push focus into themselves, so when
   // one closes (and unmounts its focused chip) focus goes back here, letting
   // ←/→ seek and OK pause straight away instead of drifting onto page widgets.
   final FocusNode _rootNode = FocusNode(debugLabel: 'fullscreenPlayer');
+  // First tile of the settings menu, so closing a nested sheet lands back on
+  // the grid instead of nowhere.
+  final FocusNode _menuFirstNode = FocusNode(debugLabel: 'fullscreenMenuFirst');
   String? _osd;
   Timer? _osdTimer;
   Timer? _progressTimer;
@@ -977,6 +1209,12 @@ class _FullscreenPlayerState extends State<_FullscreenPlayer> {
     super.initState();
     _app = AppScope.read(context);
     _backIntercept = () {
+      // A control sheet nested in the menu closes first, keeping the menu open.
+      if (_action != null) {
+        setState(() => _action = null);
+        _menuFirstNode.requestFocus();
+        return true;
+      }
       if (!_menuOpen && !_episodesOpen && !_downloadOpen) return false;
       _closeOverlays();
       return true;
@@ -990,6 +1228,7 @@ class _FullscreenPlayerState extends State<_FullscreenPlayer> {
       _menuOpen = false;
       _episodesOpen = false;
       _downloadOpen = false;
+      _action = null;
     });
     _rootNode.requestFocus();
   }
@@ -1018,6 +1257,7 @@ class _FullscreenPlayerState extends State<_FullscreenPlayer> {
     _osdTimer?.cancel();
     _progressTimer?.cancel();
     _rootNode.dispose();
+    _menuFirstNode.dispose();
     super.dispose();
   }
 
@@ -1031,7 +1271,7 @@ class _FullscreenPlayerState extends State<_FullscreenPlayer> {
     // Back is handled globally (PopScope / shortcuts → the deduped Back path),
     // so a single press can't be double-counted here. When an overlay is open we
     // let all keys fall through so its chips can traverse / activate.
-    if (_menuOpen || _episodesOpen || _downloadOpen) {
+    if (_menuOpen || _episodesOpen || _downloadOpen || _action != null) {
       return KeyEventResult.ignored;
     }
 
@@ -1050,6 +1290,7 @@ class _FullscreenPlayerState extends State<_FullscreenPlayer> {
     if (k == LogicalKeyboardKey.arrowUp) {
       setState(() {
         _episodesOpen = false;
+        _action = null;
         _menuOpen = true;
       });
       return KeyEventResult.handled;
@@ -1061,6 +1302,7 @@ class _FullscreenPlayerState extends State<_FullscreenPlayer> {
       if (app.currentEpisodes.length > 1) {
         setState(() {
           _menuOpen = false;
+          _action = null;
           _episodesOpen = true;
         });
       } else {
@@ -1128,12 +1370,16 @@ class _FullscreenPlayerState extends State<_FullscreenPlayer> {
               ),
             if (_menuOpen)
               _FullscreenMenu(
+                firstNode: _menuFirstNode,
                 onClose: _closeOverlays,
                 onOpenDownloads: () => setState(() {
                   _menuOpen = false;
+                  _action = null;
                   _downloadOpen = true;
                 }),
+                onOpenAction: (a) => setState(() => _action = a),
               ),
+            if (_menuOpen && _action != null) _ActionSheet(action: _action!),
             if (_episodesOpen) _EpisodeSheet(onClose: _closeOverlays),
             if (_downloadOpen) DownloadSheet(onClose: _closeOverlays),
           ],
@@ -1143,12 +1389,21 @@ class _FullscreenPlayerState extends State<_FullscreenPlayer> {
   }
 }
 
-/// Right-docked settings panel shown in fullscreen when ↑ is pressed. Reuses
-/// the side-panel sections; focus is pushed into it on open.
+/// Settings sheet shown in fullscreen when ↑ is pressed. It slides up from the
+/// bottom edge like the 选集 drawer (a right-docked panel left the tiles
+/// squeezed into the corner), and mirrors the page's side panel: the same
+/// [_ActionGrid], with each tile opening the same [_ActionSheet] over the video.
 class _FullscreenMenu extends StatefulWidget {
-  const _FullscreenMenu({required this.onClose, required this.onOpenDownloads});
+  const _FullscreenMenu({
+    required this.firstNode,
+    required this.onClose,
+    required this.onOpenDownloads,
+    required this.onOpenAction,
+  });
+  final FocusNode firstNode;
   final VoidCallback onClose;
   final VoidCallback onOpenDownloads;
+  final void Function(_PlayAction) onOpenAction;
 
   @override
   State<_FullscreenMenu> createState() => _FullscreenMenuState();
@@ -1159,68 +1414,75 @@ class _FullscreenMenuState extends State<_FullscreenMenu> {
   void initState() {
     super.initState();
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (mounted) FocusScope.of(context).nextFocus();
+      if (mounted) widget.firstNode.requestFocus();
     });
   }
 
   @override
   Widget build(BuildContext context) {
-    final app = AppScope.of(context);
-    final detail = app.currentDetail;
     return Align(
-      alignment: Alignment.centerRight,
-      child: Container(
-        width: 560,
-        height: double.infinity,
-        padding: const EdgeInsets.fromLTRB(28, 40, 28, 40),
-        decoration: const BoxDecoration(
-          gradient: LinearGradient(
-            begin: Alignment.centerRight,
-            end: Alignment.centerLeft,
-            colors: [Color(0xF2060A14), Color(0xB3060A14), Color(0x00060A14)],
-          ),
+      alignment: Alignment.bottomCenter,
+      // Slide up from the bottom edge, matching the 选集 drawer. The sheet is
+      // only inserted while open, so animating the entry (translate 1 → 0) is
+      // all it takes; closing unmounts it.
+      child: TweenAnimationBuilder<double>(
+        tween: Tween(begin: 1, end: 0),
+        duration: const Duration(milliseconds: 240),
+        curve: kEase,
+        builder: (context, t, child) => FractionalTranslation(
+          translation: Offset(0, t),
+          child: child,
         ),
-        child: SingleChildScrollView(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              const Text('播放设置',
-                  style: TextStyle(
-                      fontSize: 24,
-                      fontWeight: FontWeight.w700,
-                      color: AppColors.text,
-                      fontFamilyFallback: kFontFallback)),
-              const SizedBox(height: 6),
-              const Text('上键呼出 · 下键选集 · 返回关闭',
-                  style: TextStyle(
-                      fontSize: 14,
-                      color: AppColors.textDim,
-                      fontFamilyFallback: kFontFallback)),
-              const SizedBox(height: 20),
-              if (detail != null && detail.playLines.length > 1) ...[
-                const _Label('线路'),
-                const SizedBox(height: 10),
-                Wrap(
-                  spacing: 10,
-                  runSpacing: 10,
+        child: Container(
+          width: double.infinity,
+          constraints: BoxConstraints(
+            maxHeight: MediaQuery.sizeOf(context).height * 0.6,
+          ),
+          padding: const EdgeInsets.fromLTRB(AppDims.pad, 26, AppDims.pad, 34),
+          decoration: const BoxDecoration(
+            gradient: LinearGradient(
+              begin: Alignment.bottomCenter,
+              end: Alignment.topCenter,
+              colors: [Color(0xFA04070E), Color(0xF2070C18)],
+            ),
+            borderRadius: BorderRadius.vertical(top: Radius.circular(26)),
+          ),
+          child: SingleChildScrollView(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Row(
+                  crossAxisAlignment: CrossAxisAlignment.baseline,
+                  textBaseline: TextBaseline.alphabetic,
                   children: [
-                    for (var i = 0; i < detail.playLines.length; i++)
-                      SelectableChip(
-                        label: detail.playLines[i].name,
-                        selected: i == app.lineIndex,
-                        onPressed: () => app.selectLine(i),
-                      ),
+                    Text('播放设置',
+                        style: TextStyle(
+                            fontSize: 24,
+                            fontWeight: FontWeight.w700,
+                            color: AppColors.text,
+                            fontFamilyFallback: kFontFallback)),
+                    SizedBox(width: 14),
+                    Text('上键呼出 · 下键选集 · 返回关闭',
+                        style: TextStyle(
+                            fontSize: 14,
+                            color: AppColors.textDim,
+                            fontFamilyFallback: kFontFallback)),
                   ],
                 ),
-                const SizedBox(height: 18),
+                const SizedBox(height: 20),
+                _ActionGrid(
+                  firstNode: widget.firstNode,
+                  onOpen: (action) {
+                    if (action == _PlayAction.download) {
+                      widget.onOpenDownloads();
+                    } else {
+                      widget.onOpenAction(action);
+                    }
+                  },
+                ),
               ],
-              const _SwitchResourceSection(),
-              _DownloadSection(onOpen: widget.onOpenDownloads),
-              const _SpeedSection(),
-              const _SkipSection(),
-              const _DanmakuSection(),
-            ],
+            ),
           ),
         ),
       ),
@@ -1402,8 +1664,12 @@ const _kDanmakuAreas = <double>[0.25, 0.5, 1.0];
 /// 弹幕 controls: master switch + manual match, and (when on) opacity / size /
 /// speed / area presets. Listens to [DanmakuController] directly so config and
 /// match-status changes repaint without an app-wide notify.
+///
+/// [showLabel] is false inside an [_ActionSheet]: the header already says
+/// 弹幕, so the section only keeps the active host / status line.
 class _DanmakuSection extends StatelessWidget {
-  const _DanmakuSection();
+  const _DanmakuSection({this.showLabel = true});
+  final bool showLabel;
 
   @override
   Widget build(BuildContext context) {
@@ -1413,38 +1679,54 @@ class _DanmakuSection extends StatelessWidget {
       listenable: d,
       builder: (context, _) {
         final cfg = d.config;
+        final host = d.activeHost?.label;
+        final status = d.statusText;
         return Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           mainAxisSize: MainAxisSize.min,
           children: [
-            Row(
-              children: [
-                const _Label('弹幕'),
-                if (d.activeHost != null) ...[
-                  const SizedBox(width: 8),
-                  Text('· ${d.activeHost!.label}',
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(
-                          fontSize: 13,
-                          color: AppColors.textDim,
-                          fontFamilyFallback: kFontFallback)),
-                ],
-                const SizedBox(width: 10),
-                if (d.statusText != null)
-                  Flexible(
-                    child: Text(
-                      d.statusText!,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(
-                          fontSize: 13,
-                          color: AppColors.textDim,
-                          fontFamilyFallback: kFontFallback),
+            if (showLabel)
+              Row(
+                children: [
+                  const _Label('弹幕'),
+                  if (host != null) ...[
+                    const SizedBox(width: 8),
+                    Flexible(
+                      child: Text('· $host',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(
+                              fontSize: 13,
+                              color: AppColors.textDim,
+                              fontFamilyFallback: kFontFallback)),
                     ),
-                  ),
-              ],
-            ),
+                  ],
+                  const SizedBox(width: 10),
+                  if (status != null)
+                    Flexible(
+                      child: Text(
+                        status,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                            fontSize: 13,
+                            color: AppColors.textDim,
+                            fontFamilyFallback: kFontFallback),
+                      ),
+                    ),
+                ],
+              )
+            else if (host != null || status != null)
+              Text(
+                [if (host != null) host, if (status != null) status]
+                    .join(' · '),
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(
+                    fontSize: 13,
+                    color: AppColors.textDim,
+                    fontFamilyFallback: kFontFallback),
+              ),
             const SizedBox(height: 10),
             Wrap(
               spacing: 10,

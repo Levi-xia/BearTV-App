@@ -25,6 +25,33 @@ class DownloadSheet extends StatefulWidget {
 class _DownloadSheetState extends State<DownloadSheet> {
   FocusNode? _episodeNode;
   int _focusIndex = 0;
+  final FocusScopeNode _scope = FocusScopeNode(debugLabel: 'downloadSheet');
+
+  /// True once a leaf inside the sheet took focus; [build] retries until then
+  /// (episodes can still be resolving when the sheet first mounts).
+  bool _claimed = false;
+
+  @override
+  void initState() {
+    super.initState();
+    // Claim the current episode explicitly. A FocusScope's own autofocus only
+    // focuses the scope node, which no key can act on, and the cell's autofocus
+    // races the scope's — so D-pad input did nothing until something was
+    // focused by hand.
+    WidgetsBinding.instance.addPostFrameCallback((_) => _claimFocus());
+  }
+
+  void _claimFocus() {
+    if (!mounted || _claimed) return;
+    final node = _episodeNode;
+    if (node != null && node.context != null) {
+      node.requestFocus();
+      _claimed = true;
+    } else {
+      _scope.requestFocus();
+      _claimed = _scope.nextFocus();
+    }
+  }
 
   @override
   void didChangeDependencies() {
@@ -41,6 +68,7 @@ class _DownloadSheetState extends State<DownloadSheet> {
   @override
   void dispose() {
     _episodeNode?.dispose();
+    _scope.dispose();
     super.dispose();
   }
 
@@ -123,6 +151,9 @@ class _DownloadSheetState extends State<DownloadSheet> {
     final detail = app.currentDetail;
     final eps = app.currentEpisodes;
     if (detail == null || eps.isEmpty) return const SizedBox.shrink();
+    if (!_claimed) {
+      WidgetsBinding.instance.addPostFrameCallback((_) => _claimFocus());
+    }
 
     var cached = 0;
     var addable = 0;
@@ -134,7 +165,7 @@ class _DownloadSheetState extends State<DownloadSheet> {
     return Align(
       alignment: Alignment.bottomCenter,
       child: FocusScope(
-        autofocus: true,
+        node: _scope,
         // A group of its own so arrow keys can't walk back onto the play page
         // underneath while the sheet is open.
         child: FocusTraversalGroup(
