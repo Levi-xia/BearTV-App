@@ -1822,7 +1822,6 @@ class _DanmakuLayer extends StatelessWidget {
 
 // Discrete TV-friendly danmaku presets.
 const _kDanmakuOpacities = <double>[0.4, 0.7, 1.0];
-const _kDanmakuFontSizes = <double>[18, 22, 26];
 const _kDanmakuSpeeds = <double>[12, 9, 6]; // scrollSeconds: 慢 / 中 / 快
 const _kDanmakuAreas = <double>[0.25, 0.5, 1.0];
 
@@ -1920,14 +1919,14 @@ class _DanmakuSection extends StatelessWidget {
                   ),
               ]),
               const SizedBox(height: 12),
-              _ChipRow(label: '字号', children: [
-                for (final f in _kDanmakuFontSizes)
-                  SelectableChip(
-                    label: f == 18 ? '小' : (f == 22 ? '中' : '大'),
-                    selected: cfg.fontSize == f,
-                    onPressed: () => d.setFontSize(f),
-                  ),
-              ]),
+              _StepperRow(
+                label: '字号',
+                value: '${cfg.fontSize.round()}',
+                canDecrease: cfg.fontSize > DanmakuConfig.minFontSize,
+                canIncrease: cfg.fontSize < DanmakuConfig.maxFontSize,
+                onDecrease: () => d.stepFontSize(-DanmakuConfig.fontSizeStep),
+                onIncrease: () => d.stepFontSize(DanmakuConfig.fontSizeStep),
+              ),
               const SizedBox(height: 12),
               _ChipRow(label: '速度', children: [
                 for (var i = 0; i < _kDanmakuSpeeds.length; i++)
@@ -1974,6 +1973,78 @@ class _ChipRow extends StatelessWidget {
                 fontFamilyFallback: kFontFallback)),
         const SizedBox(height: 8),
         Wrap(spacing: 10, runSpacing: 10, children: children),
+      ],
+    );
+  }
+}
+
+/// A labelled −/+ stepper for numeric danmaku settings (字号). Unlike the
+/// presets of [_ChipRow] it covers the whole range continuously, so the size
+/// isn't capped at a handful of values.
+class _StepperRow extends StatelessWidget {
+  const _StepperRow({
+    required this.label,
+    required this.value,
+    required this.canDecrease,
+    required this.canIncrease,
+    required this.onDecrease,
+    required this.onIncrease,
+  });
+
+  final String label;
+  final String value;
+  final bool canDecrease;
+  final bool canIncrease;
+  final VoidCallback onDecrease;
+  final VoidCallback onIncrease;
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Text(label,
+            style: const TextStyle(
+                fontSize: 14,
+                color: AppColors.textDim,
+                fontFamilyFallback: kFontFallback)),
+        const SizedBox(height: 8),
+        Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            // At a boundary the button stays in the focus chain (so D-pad
+            // traversal doesn't jump) but is dimmed and inert.
+            Opacity(
+              opacity: canDecrease ? 1 : 0.35,
+              child: SelectableChip(
+                label: '－',
+                selected: false,
+                onPressed: canDecrease ? onDecrease : () {},
+              ),
+            ),
+            SizedBox(
+              width: 74,
+              child: Text(
+                value,
+                textAlign: TextAlign.center,
+                style: const TextStyle(
+                    fontSize: 20,
+                    fontWeight: FontWeight.w600,
+                    color: AppColors.text,
+                    fontFamilyFallback: kFontFallback),
+              ),
+            ),
+            Opacity(
+              opacity: canIncrease ? 1 : 0.35,
+              child: SelectableChip(
+                label: '＋',
+                selected: false,
+                onPressed: canIncrease ? onIncrease : () {},
+              ),
+            ),
+          ],
+        ),
       ],
     );
   }

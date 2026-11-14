@@ -120,8 +120,25 @@ class DanmakuConfig {
   /// 0.1..1.0 — text opacity.
   final double opacity;
 
-  /// Logical font size in px (pre global UI scale). Presets: 18 / 22 / 26.
+  /// Logical font size in px (pre global UI scale). Adjustable in the play
+  /// page with a −/+ stepper between [minFontSize] and [maxFontSize]; the old
+  /// 18 / 22 / 26 presets are still inside that range.
   final double fontSize;
+
+  /// Boundaries of the 字号 stepper (inclusive) and the size of one step.
+  static const double minFontSize = 14;
+  static const double maxFontSize = 48;
+  static const double fontSizeStep = 2;
+
+  /// Clamps [v] onto the stepper's whole-pixel grid. Danmaku text is laid out
+  /// lane by lane, so a half-pixel size only blurs it, and a corrupted stored
+  /// value must not blow the lane height up.
+  static double clampFontSize(double v) {
+    if (v.isNaN) return 22;
+    final snapped =
+        ((v - minFontSize) / fontSizeStep).round() * fontSizeStep + minFontSize;
+    return snapped.clamp(minFontSize, maxFontSize).toDouble();
+  }
 
   /// Seconds a scrolling comment takes to cross the screen. This is a
   /// wall-clock duration, independent of video playback speed (fast-forwarding
@@ -167,7 +184,7 @@ class DanmakuConfig {
   factory DanmakuConfig.fromJson(Map<String, dynamic> j) => DanmakuConfig(
         enabled: (j['enabled'] as bool?) ?? true,
         opacity: (j['opacity'] as num?)?.toDouble() ?? 1.0,
-        fontSize: (j['fontSize'] as num?)?.toDouble() ?? 22,
+        fontSize: clampFontSize((j['fontSize'] as num?)?.toDouble() ?? 22),
         scrollSeconds: (j['scrollSeconds'] as num?)?.toDouble() ?? 12,
         area: (j['area'] as num?)?.toDouble() ?? 0.25,
       );

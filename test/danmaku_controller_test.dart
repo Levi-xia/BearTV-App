@@ -254,4 +254,38 @@ void main() {
       expect(settings.danmakuHosts, isEmpty);
     });
   });
+
+  group('字号 stepper', () {
+    test('steps up to the max and stays there', () async {
+      final c = _controller(_FakeClient());
+      await c.setFontSize(DanmakuConfig.maxFontSize - DanmakuConfig.fontSizeStep);
+
+      await c.stepFontSize(DanmakuConfig.fontSizeStep);
+      expect(c.config.fontSize, DanmakuConfig.maxFontSize);
+
+      await c.stepFontSize(DanmakuConfig.fontSizeStep);
+      expect(c.config.fontSize, DanmakuConfig.maxFontSize);
+    });
+
+    test('steps down to the min and stays there', () async {
+      final c = _controller(_FakeClient());
+      await c.setFontSize(DanmakuConfig.minFontSize + DanmakuConfig.fontSizeStep);
+
+      await c.stepFontSize(-DanmakuConfig.fontSizeStep);
+      expect(c.config.fontSize, DanmakuConfig.minFontSize);
+
+      await c.stepFontSize(-DanmakuConfig.fontSizeStep);
+      expect(c.config.fontSize, DanmakuConfig.minFontSize);
+    });
+
+    test('an out-of-range set is clamped onto the grid', () async {
+      final c = _controller(_FakeClient());
+
+      await c.setFontSize(999);
+      expect(c.config.fontSize, DanmakuConfig.maxFontSize);
+
+      await c.setFontSize(23);
+      expect(c.config.fontSize, 24);
+    });
+  });
 }

@@ -335,7 +335,20 @@ class DanmakuController extends ChangeNotifier {
 
   Future<void> setEnabled(bool v) => _save(_config.copyWith(enabled: v));
   Future<void> setOpacity(double v) => _save(_config.copyWith(opacity: v));
-  Future<void> setFontSize(double v) => _save(_config.copyWith(fontSize: v));
+
+  /// Sets the danmaku font size, snapped to the stepper grid and clamped to
+  /// [DanmakuConfig.minFontSize]..[DanmakuConfig.maxFontSize].
+  Future<void> setFontSize(double v) =>
+      _save(_config.copyWith(fontSize: DanmakuConfig.clampFontSize(v)));
+
+  /// Moves the danmaku font size by [delta] px (−/+ stepper). Does nothing when
+  /// already at a boundary, so holding the key can't drift off the range.
+  Future<void> stepFontSize(double delta) {
+    final next = DanmakuConfig.clampFontSize(_config.fontSize + delta);
+    if (next == _config.fontSize) return Future<void>.value();
+    return setFontSize(next);
+  }
+
   Future<void> setScrollSeconds(double v) =>
       _save(_config.copyWith(scrollSeconds: v));
   Future<void> setArea(double v) => _save(_config.copyWith(area: v));

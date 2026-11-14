@@ -152,5 +152,22 @@ void main() {
       expect(back.scrollSeconds, 6);
       expect(back.area, 1.0);
     });
+
+    test('font size snaps to the stepper grid and clamps to the range', () {
+      expect(DanmakuConfig.clampFontSize(22), 22);
+      expect(DanmakuConfig.clampFontSize(23), 24);
+      expect(DanmakuConfig.clampFontSize(999), DanmakuConfig.maxFontSize);
+      expect(DanmakuConfig.clampFontSize(1), DanmakuConfig.minFontSize);
+      expect(DanmakuConfig.clampFontSize(double.nan), 22);
+      expect(DanmakuConfig.minFontSize, lessThan(18)); // the old 小 preset
+      expect(DanmakuConfig.maxFontSize, greaterThan(26)); // the old 大 preset
+    });
+
+    test('a stored out-of-range font size is clamped on load', () {
+      final huge = DanmakuConfig.fromJson({'fontSize': 200});
+      expect(huge.fontSize, DanmakuConfig.maxFontSize);
+      final tiny = DanmakuConfig.fromJson({'fontSize': 2});
+      expect(tiny.fontSize, DanmakuConfig.minFontSize);
+    });
   });
 }
