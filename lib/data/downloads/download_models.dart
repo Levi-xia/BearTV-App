@@ -291,11 +291,25 @@ class DownloadGroup {
   }
 }
 
-/// A resolved cache hit: the group it belongs to + the exact task to play.
+/// A resolved play target: the group's resource + the episode to open.
+///
+/// [task] is the episode's download record when one exists — its status (done,
+/// downloading, paused) decides how the play page transports it. It is null for
+/// an episode of the group that was never downloaded (e.g. the recorded episode
+/// of a resource the user only downloaded other episodes from); the play page
+/// then opens [lineIndex]/[episodeIndex] online from the same snapshot.
 class DownloadLaunch {
   final DownloadGroup group;
-  final DownloadTask task;
-  const DownloadLaunch({required this.group, required this.task});
+  final DownloadTask? task;
+  final int lineIndex;
+  final int episodeIndex;
+
+  const DownloadLaunch({
+    required this.group,
+    this.task,
+    this.lineIndex = 0,
+    this.episodeIndex = 0,
+  });
 }
 
 /// A still-downloading episode whose finished prefix can start playing now

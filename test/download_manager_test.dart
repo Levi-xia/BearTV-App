@@ -492,7 +492,7 @@ void main() {
 
     final fresh = manager.launchFor(item: _item);
     expect(fresh, isNotNull);
-    expect(fresh!.task.episodeIndex, 0);
+    expect(fresh!.task!.episodeIndex, 0);
 
     final ep1 = manager.launchFor(
       item: _item,
@@ -508,7 +508,7 @@ void main() {
       ),
     );
     expect(ep1, isNotNull);
-    expect(ep1!.task.episodeIndex, 1);
+    expect(ep1!.task!.episodeIndex, 1);
 
     // Episode 2 isn't downloaded: must fall back to online, not switch show.
     final ep2 = manager.launchFor(
@@ -545,6 +545,108 @@ void main() {
       ),
       isNotNull,
     );
+  });
+
+  group('launchForGroup (下载管理 · 去播放)', () {
+    test('without a record it opens a finished episode of this group',
+        () async {
+      await manager.enqueue(_request(episodes: [1]));
+      await pumpEventQueue();
+      await engine.complete(engine.started.single.id);
+
+      final launch = manager.launchForGroup(manager.groups.single);
+
+      expect(launch, isNotNull);
+      expect(launch!.group.sourceId, 'src1');
+      expect(launch.task!.episodeIndex, 1);
+    });
+
+    test('without a record a finished episode beats an in-flight prefix',
+        () async {
+      await manager.enqueue(_request(episodes: [1]));
+      await pumpEventQueue();
+      await engine.complete(engine.started.single.id);
+      await manager.enqueue(_request(episodes: [0]));
+      await pumpEventQueue();
+      final inFlight = engine.started.last;
+      final dir = await storage.ensureTaskDir(inFlight);
+      File('${dir!.path}/partial.m3u8')
+          .writeAsStringSync('#EXTM3U\n#EXT-X-ENDLIST\n');
+      engine.emitPlayable(inFlight.id, DownloadManager.minPartialMs + 30000);
+
+      final launch = manager.launchForGroup(manager.groups.single);
+
+      expect(launch!.task!.episodeIndex, 1);
+    });
+
+    test('without a record only the in-flight prefix is playable', () async {
+      await manager.enqueue(_request(episodes: [0]));
+      await pumpEventQueue();
+      final task = engine.started.single;
+      final dir = await storage.ensureTaskDir(task);
+      File('${dir!.path}/partial.m3u8')
+          .writeAsStringSync('#EXTM3U\n#EXT-X-ENDLIST\n');
+      engine.emitPlayable(task.id, DownloadManager.minPartialMs + 30000);
+
+      final launch = manager.launchForGroup(manager.groups.single);
+
+      expect(launch!.task!.episodeIndex, 0);
+      expect(launch.task!.playableMs, greaterThan(DownloadManager.minPartialMs));
+    });
+
+    test('a task with no prefix yet is still returned (online fallback)',
+        () async {
+      await manager.enqueue(_request(episodes: [0]));
+      await pumpEventQueue();
+
+      final launch = manager.launchForGroup(manager.groups.single);
+
+      expect(launch!.task!.episodeIndex, 0);
+    });
+
+    test('a record on this resource pins its undownloaded episode', () async {
+      await manager.enqueue(_request(episodes: [0]));
+      await pumpEventQueue();
+      await engine.complete(engine.started.single.id);
+
+      final launch = manager.launchForGroup(
+        manager.groups.single,
+        entry: const HistoryEntry(
+          item: _item,
+          sourceId: 'src1',
+          sourceName: '源一',
+          vodId: 'vod1',
+          episodeIndex: 2,
+          episodeTitle: '第3集',
+          episodeUrl: 'https://cdn.test/1/ep2.m3u8',
+        ),
+      );
+
+      expect(launch!.task, isNull);
+      expect(launch.lineIndex, 0);
+      expect(launch.episodeIndex, 2);
+    });
+
+    test('a record from another resource does not pin the episode', () async {
+      await manager.enqueue(_request(episodes: [0]));
+      await pumpEventQueue();
+      await engine.complete(engine.started.single.id);
+
+      final launch = manager.launchForGroup(
+        manager.groups.single,
+        entry: const HistoryEntry(
+          item: _item,
+          sourceId: 'src2',
+          sourceName: '源二',
+          vodId: 'vod9',
+          episodeIndex: 1,
+          episodeTitle: '第2集',
+          episodeUrl: 'https://other.test/ep1.m3u8',
+        ),
+      );
+
+      expect(launch!.task!.episodeIndex, 0);
+    });
   });
 
   test('completedTaskFor matches signed URLs and titles', () async {

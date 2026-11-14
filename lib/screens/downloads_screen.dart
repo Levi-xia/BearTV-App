@@ -439,7 +439,7 @@ class _GroupCard extends StatelessWidget {
               SelectableChip(
                 label: '去播放',
                 selected: false,
-                onPressed: () => app.openTitle(group.item),
+                onPressed: () => app.openDownloadGroup(group),
               ),
               const SizedBox(width: 10),
               SelectableChip(

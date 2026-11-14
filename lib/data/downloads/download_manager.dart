@@ -816,6 +816,88 @@ class DownloadManager extends ChangeNotifier {
     );
   }
 
+  /// Play target for 下载管理's 去播放 on [group]: always this group's own
+  /// resource, so no CMS re-resolve can swap in another source.
+  ///
+  /// The episode is the history-recorded one when that record belongs to this
+  /// same resource (downloaded or not — an undownloaded one streams online from
+  /// the snapshot); otherwise a finished episode, then an in-flight/paused one
+  /// with a playable prefix (边下边播), then the lowest episode index.
+  DownloadLaunch? launchForGroup(DownloadGroup group, {HistoryEntry? entry}) {
+    final snapshot = group.snapshot;
+    if (snapshot.playLines.isEmpty) return null;
+
+    var line = -1;
+    var ep = -1;
+    if (entry != null &&
+        entry.vodId.isNotEmpty &&
+        '${entry.sourceId}:${entry.vodId}' == group.key) {
+      final loc = locateEpisode(
+        snapshot,
+        episodeUrl: entry.episodeUrl,
+        episodeTitle: entry.episodeTitle,
+        episodeIndex: entry.episodeIndex,
+      );
+      if (loc != null) {
+        line = loc.lineIndex;
+        ep = loc.episodeIndex;
+      }
+    }
+
+    // A record from this same resource pins the episode — downloaded or not.
+    if (line >= 0) {
+      final task = taskForEpisode(
+        sourceId: group.sourceId,
+        vodId: snapshot.vodId,
+        episodeUrl: _episodeUrlAt(snapshot, line, ep),
+        episodeTitle: _episodeTitleAt(snapshot, line, ep),
+        episodeIndex: ep,
+      );
+      return DownloadLaunch(
+        group: group,
+        task: task,
+        lineIndex: line,
+        episodeIndex: ep,
+      );
+    }
+
+    final task = _preferredTask(group);
+    if (task != null) return DownloadLaunch(group: group, task: task);
+    return DownloadLaunch(group: group);
+  }
+
+  /// Which episode of [group] to open when no record pins one: a finished
+  /// episode first (lowest index, file still on disk), then an in-flight or
+  /// paused HLS task whose prefix is long enough to watch, then any task.
+  DownloadTask? _preferredTask(DownloadGroup group) {
+    DownloadTask? completed;
+    for (final t in group.tasks) {
+      if (t.status != DownloadStatus.completed) continue;
+      if (!storage.isComplete(t)) continue;
+      if (completed == null || t.episodeIndex < completed.episodeIndex) {
+        completed = t;
+      }
+    }
+    if (completed != null) return completed;
+
+    DownloadTask? prefix;
+    for (final t in group.tasks) {
+      if (t.status != DownloadStatus.downloading &&
+          t.status != DownloadStatus.paused) {
+        continue;
+      }
+      if (t.playableMs < minPartialMs) continue;
+      if (prefix == null || t.episodeIndex < prefix.episodeIndex) prefix = t;
+    }
+    if (prefix != null) return prefix;
+
+    DownloadTask? first;
+    for (final t in group.tasks) {
+      if (first == null || t.episodeIndex < first.episodeIndex) first = t;
+    }
+    return first;
+  }
+
   String? _episodeUrlAt(VodDetail detail, int line, int ep) {
     if (line < 0 || line >= detail.playLines.length) return null;
     final eps = detail.playLines[line].episodes;

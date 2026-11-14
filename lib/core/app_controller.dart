@@ -990,19 +990,21 @@ class AppController extends ChangeNotifier {
     resourceOptions = const [];
     playError = null;
     resolving = false;
-    lineIndex = launch.task.lineIndex;
-    episodeIndex = launch.task.episodeIndex;
+    lineIndex = launch.task?.lineIndex ?? launch.lineIndex;
+    episodeIndex = launch.task?.episodeIndex ?? launch.episodeIndex;
 
     // The snapshot may have been refreshed/reordered since the task was queued.
-    final located = locateEpisode(
-      launch.group.snapshot,
-      episodeUrl: launch.task.episodeUrl,
-      episodeTitle: launch.task.episodeTitle,
-      episodeIndex: launch.task.episodeIndex,
-    );
-    if (located != null) {
-      lineIndex = located.lineIndex;
-      episodeIndex = located.episodeIndex;
+    if (launch.task != null) {
+      final located = locateEpisode(
+        launch.group.snapshot,
+        episodeUrl: launch.task!.episodeUrl,
+        episodeTitle: launch.task!.episodeTitle,
+        episodeIndex: launch.task!.episodeIndex,
+      );
+      if (located != null) {
+        lineIndex = located.lineIndex;
+        episodeIndex = located.episodeIndex;
+      }
     }
 
     skipEnabled = entry?.skipEnabled ?? false;
@@ -1306,9 +1308,30 @@ class AppController extends ChangeNotifier {
     final group = downloads.groupForTask(task.id);
     if (group == null) return;
     final entry = history.entryFor(task.itemKey);
+    ++_playToken; // drop a resolve still in flight for another title
     await _openFromDownload(
       task.item,
       DownloadLaunch(group: group, task: task),
+      entry: entry,
+      returnPage: AppPage.downloads,
+    );
+  }
+
+  /// 下载管理's 去播放. Opens this group's own resource from its stored snapshot
+  /// — no CMS re-resolve, so a show with no playback record can never land on a
+  /// different source. [_playCurrent] then picks the transport: completed cache,
+  /// 边下边播 prefix, or the snapshot's online m3u8.
+  Future<void> openDownloadGroup(DownloadGroup group) async {
+    final entry = history.entryFor(group.item.key);
+    final launch = downloads.launchForGroup(group, entry: entry);
+    if (launch == null) {
+      showToast('该资源没有可播放的剧集');
+      return;
+    }
+    ++_playToken; // drop a resolve still in flight for another title
+    await _openFromDownload(
+      group.item,
+      launch,
       entry: entry,
       returnPage: AppPage.downloads,
     );

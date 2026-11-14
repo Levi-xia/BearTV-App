@@ -38,6 +38,39 @@ class _FakeVod extends VodRepository {
       const [];
 }
 
+/// A repository that only knows a *different* source. 去播放 must never reach
+/// it: the download group's own snapshot is what gets played.
+class _OtherVod extends VodRepository {
+  @override
+  Future<VodDetail?> detail(CmsSite site, String vodId) async => _otherDetail;
+
+  @override
+  Future<VodDetail?> resolveByTitle(String title, List<CmsSite> sites) async =>
+      _otherDetail;
+
+  @override
+  Future<List<ResourceOption>> loadResourceOptions(
+    String title,
+    List<CmsSite> sites, {
+    VodDetail? current,
+  }) async =>
+      const [];
+}
+
+const _otherDetail = VodDetail(
+  sourceId: 'src2',
+  sourceName: '源二',
+  vodId: 'vod9',
+  title: '测试剧',
+  playLines: [
+    PlayLine(name: '线路1', episodes: [
+      Episode(title: '第1集', url: 'https://other.test/ep0.m3u8'),
+      Episode(title: '第2集', url: 'https://other.test/ep1.m3u8'),
+      Episode(title: '第3集', url: 'https://other.test/ep2.m3u8'),
+    ]),
+  ],
+);
+
 /// A repository that can never answer — offline, or the source is gone.
 class _OfflineVod extends VodRepository {
   @override
@@ -442,12 +475,14 @@ void main() {
   });
 
   group('下载管理 · 去播放', () {
+    DownloadGroup group() => manager.groups.first;
+
     test('opens the recorded episode and Back returns to 下载管理', () async {
       await setUpController(cachedEpisodes: [0, 1]);
 
       c.openDownloads();
       expect(c.page, AppPage.downloads);
-      await c.openTitle(_item);
+      await c.openDownloadGroup(group());
 
       expect(c.page, AppPage.play);
       expect(c.episodeIndex, 1);
@@ -463,7 +498,7 @@ void main() {
       await setUpController(cachedEpisodes: [1], progressive: true);
 
       c.openDownloads();
-      await c.openTitle(_item);
+      await c.openDownloadGroup(group());
 
       expect(c.page, AppPage.play);
       expect(c.playingPartial, isTrue);
@@ -476,13 +511,108 @@ void main() {
           cachedEpisodes: [0], withHistory: false, vod: _OfflineVod());
 
       c.openDownloads();
-      await c.openTitle(_item);
+      await c.openDownloadGroup(group());
 
       expect(c.page, AppPage.play);
       expect(c.playError, isNull);
       expect(c.currentDetail!.sourceId, 'src1');
       expect(c.playingFromCache, isTrue);
       expect(player.opened.last, endsWith('index.m3u8'));
+    });
+
+    test('with no record, the group resource is opened — never another source',
+        () async {
+      await setUpController(
+          cachedEpisodes: [0], withHistory: false, vod: _OtherVod());
+
+      c.openDownloads();
+      await c.openDownloadGroup(group());
+
+      expect(c.page, AppPage.play);
+      expect(c.currentDetail!.sourceId, 'src1');
+      expect(c.currentDetail!.vodId, 'vod1');
+      expect(c.playingFromCache, isTrue);
+      expect(player.opened.where((u) => u.contains('other.test')), isEmpty);
+    });
+
+    test('with no record, an in-flight group opens 边下边播', () async {
+      await setUpController(
+          cachedEpisodes: [1],
+          withHistory: false,
+          progressive: true,
+          vod: _OtherVod());
+
+      c.openDownloads();
+      await c.openDownloadGroup(group());
+
+      expect(c.page, AppPage.play);
+      expect(c.currentDetail!.sourceId, 'src1');
+      expect(c.playingPartial, isTrue);
+      expect(player.opened.last, endsWith('partial.m3u8'));
+      expect(player.opened.where((u) => u.contains('other.test')), isEmpty);
+    });
+
+    test('an unstarted download streams the snapshot m3u8 of its own resource',
+        () async {
+      await setUpController(
+          cachedEpisodes: [1],
+          withHistory: false,
+          progressive: true,
+          vod: _OtherVod());
+      // Nothing playable on disk yet.
+      progressiveEngine!.report(manager.activeTasks.single.id, 0);
+
+      c.openDownloads();
+      await c.openDownloadGroup(group());
+
+      expect(c.page, AppPage.play);
+      expect(c.episodeIndex, 1);
+      expect(c.playingPartial, isFalse);
+      expect(c.playingFromCache, isFalse);
+      expect(player.opened.last, 'https://cdn.test/1/ep1.m3u8');
+      expect(player.opened.where((u) => u.contains('other.test')), isEmpty);
+    });
+
+    test('a record for another source does not pin the episode', () async {
+      await setUpController(cachedEpisodes: [1], withHistory: false);
+      c.history.put(HistoryEntry(
+        item: _item,
+        sourceId: 'src2',
+        sourceName: '源二',
+        vodId: 'vod9',
+        episodeIndex: 0,
+        positionMs: 120000,
+        durationMs: 1800000,
+        episodeTitle: '第1集',
+        episodeUrl: 'https://other.test/ep0.m3u8',
+      ));
+
+      c.openDownloads();
+      await c.openDownloadGroup(group());
+
+      expect(c.page, AppPage.play);
+      expect(c.currentDetail!.sourceId, 'src1');
+      expect(c.episodeIndex, 1);
+      expect(c.playingFromCache, isTrue);
+      expect(player.opened.where((u) => u.contains('other.test')), isEmpty);
+    });
+
+    test('a record on this source at an undownloaded episode keeps the episode',
+        () async {
+      await setUpController(
+          cachedEpisodes: [0],
+          recordedEpisode: 1,
+          vod: _OtherVod());
+
+      c.openDownloads();
+      await c.openDownloadGroup(group());
+
+      expect(c.page, AppPage.play);
+      expect(c.currentDetail!.sourceId, 'src1');
+      expect(c.episodeIndex, 1);
+      expect(c.playingFromCache, isFalse);
+      expect(player.opened.last, 'https://cdn.test/1/ep1.m3u8');
+      expect(player.opened.where((u) => u.contains('other.test')), isEmpty);
     });
   });
 
