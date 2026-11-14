@@ -41,6 +41,10 @@ class DownloadManager extends ChangeNotifier {
   /// own caches (history, settings, update APKs).
   static const reserveBytes = 512 * 1024 * 1024;
 
+  /// Minimum downloaded prefix before 边下边播 starts — about a minute of
+  /// content, enough that playback doesn't immediately reach the frontier.
+  static const minPartialMs = 60 * 1000;
+
   final DownloadsStore _store;
   final DownloadStorage storage;
   final DownloadEngine _engine;
@@ -387,6 +391,8 @@ class DownloadManager extends ChangeNotifier {
         totalSegments: p.totalSegments,
         receivedBytes: p.receivedBytes,
         totalBytes: p.totalBytes,
+        playableMs: p.playableMs,
+        durationMs: p.totalMs > 0 ? p.totalMs : t.durationMs,
         updatedAt: _nowMs,
       );
       _tasks[task.id] = next;
@@ -418,6 +424,7 @@ class DownloadManager extends ChangeNotifier {
         doneSegments: result.totalSegments,
         totalSegments: result.totalSegments,
         durationMs: result.durationMs,
+        playableMs: result.durationMs,
         variantBandwidth: result.bandwidth,
         error: '',
         updatedAt: _nowMs,
@@ -567,6 +574,10 @@ class DownloadManager extends ChangeNotifier {
 
   // --- Cache lookup ---------------------------------------------------------
 
+  /// Current record for [id] — the play page polls this while 边下边播 to see
+  /// how far the downloaded prefix has grown.
+  DownloadTask? taskById(String id) => _tasks[id];
+
   /// Stored detail snapshot for a resource (used as an offline fallback when the
   /// CMS detail request fails).
   VodDetail? snapshotFor(String sourceId, String vodId) =>
@@ -577,6 +588,20 @@ class DownloadManager extends ChangeNotifier {
   VodDetail? snapshotForEntry(HistoryEntry? entry) {
     if (entry == null) return null;
     return snapshotFor(entry.sourceId, entry.vodId);
+  }
+
+  /// Snapshot of any group belonging to [itemKey]. 下载管理 can open a show that
+  /// was downloaded but never watched, so there is no playback record to supply
+  /// a source id — this keeps such a show playable offline.
+  VodDetail? snapshotForItem(String itemKey) {
+    DownloadGroup? best;
+    for (final g in groups) {
+      if (g.item.key != itemKey) continue;
+      // Prefer the group with the most finished episodes: it is the one the
+      // user is most likely to watch.
+      if (best == null || g.completedCount > best.completedCount) best = g;
+    }
+    return best?.snapshot;
   }
 
   /// Any task (queued/downloading/paused/failed/completed) for an episode,
@@ -655,6 +680,43 @@ class DownloadManager extends ChangeNotifier {
       episodeIndex: episodeIndex,
     );
     return task == null ? const [] : storage.localUrls(task);
+  }
+
+  /// A still-downloading episode whose finished prefix can be watched now
+  /// (边下边播). Only HLS tasks qualify: a partial `video.mp4` is not seekable
+  /// and its moov atom may still be missing.
+  ///
+  /// The prefix must be at least [minPartialMs] long and its `partial.m3u8`
+  /// must exist — that playlist is written as segments land and is what the
+  /// player reads. Paused tasks qualify too: after an app restart a task is
+  /// paused, yet the prefix on disk is perfectly playable.
+  PartialPlayback? partialFor({
+    required String sourceId,
+    required String vodId,
+    String? episodeUrl,
+    String? episodeTitle,
+    int? episodeIndex,
+  }) {
+    final task = taskForEpisode(
+      sourceId: sourceId,
+      vodId: vodId,
+      episodeUrl: episodeUrl,
+      episodeTitle: episodeTitle,
+      episodeIndex: episodeIndex,
+    );
+    if (task == null) return null;
+    if (task.status != DownloadStatus.downloading &&
+        task.status != DownloadStatus.paused) {
+      return null;
+    }
+    if (task.playableMs < minPartialMs) return null;
+    final urls = storage.partialUrls(task);
+    if (urls.isEmpty) return null;
+    return PartialPlayback(
+      task: task,
+      urls: urls,
+      playableMs: task.playableMs,
+    );
   }
 
   /// Whether the episode currently on screen is cached (drives the 已缓存 chip).

@@ -28,7 +28,8 @@ import '../widgets/net_image.dart';
 ///     cached, pause/resume it when still in flight.
 ///   • MENU on an episode → delete that episode; MENU on a card header (or the
 ///     删除该剧 chip) → delete the whole card.
-///   • 去播放 resumes the show exactly like entering it from 播放记录.
+///   • 去播放 always opens the show at its 播放记录 episode; the play page itself
+///     decides the transport (finished cache / 边下边播 prefix / online m3u8).
 ///   • Back is the remote's own key (handled by the controller).
 class DownloadsScreen extends StatefulWidget {
   const DownloadsScreen({super.key});
@@ -340,7 +341,6 @@ class _GroupCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final playable = group.firstCompleted != null;
     return Container(
       decoration: BoxDecoration(
         color: AppColors.cardBg,
@@ -436,14 +436,12 @@ class _GroupCard extends StatelessWidget {
                 ),
               ),
               const SizedBox(width: 10),
-              if (playable) ...[
-                SelectableChip(
-                  label: '去播放',
-                  selected: false,
-                  onPressed: () => app.openTitle(group.item),
-                ),
-                const SizedBox(width: 10),
-              ],
+              SelectableChip(
+                label: '去播放',
+                selected: false,
+                onPressed: () => app.openTitle(group.item),
+              ),
+              const SizedBox(width: 10),
               SelectableChip(
                 label: '删除该剧',
                 selected: false,

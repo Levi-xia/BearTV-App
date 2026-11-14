@@ -57,6 +57,11 @@ class DownloadTask {
 
   final String error;
 
+  /// HLS: duration of the contiguous downloaded prefix — how much of the
+  /// episode can already be played from disk (边下边播). 0 when unknown and on
+  /// direct-file downloads, which can't be played before they finish.
+  final int playableMs;
+
   /// Path relative to the task directory (`index.m3u8` or `video.mp4`), empty
   /// until the download completes.
   final String relativePath;
@@ -84,6 +89,7 @@ class DownloadTask {
     this.receivedBytes = 0,
     this.totalBytes = 0,
     this.error = '',
+    this.playableMs = 0,
     this.relativePath = '',
     this.isHls = false,
     this.variantBandwidth = 0,
@@ -141,6 +147,7 @@ class DownloadTask {
     int? receivedBytes,
     int? totalBytes,
     String? error,
+    int? playableMs,
     String? relativePath,
     bool? isHls,
     int? variantBandwidth,
@@ -166,6 +173,7 @@ class DownloadTask {
         receivedBytes: receivedBytes ?? this.receivedBytes,
         totalBytes: totalBytes ?? this.totalBytes,
         error: error ?? this.error,
+        playableMs: playableMs ?? this.playableMs,
         relativePath: relativePath ?? this.relativePath,
         isHls: isHls ?? this.isHls,
         variantBandwidth: variantBandwidth ?? this.variantBandwidth,
@@ -192,6 +200,7 @@ class DownloadTask {
         'receivedBytes': receivedBytes,
         'totalBytes': totalBytes,
         'error': error,
+        'playableMs': playableMs,
         'relativePath': relativePath,
         'isHls': isHls,
         'variantBandwidth': variantBandwidth,
@@ -221,6 +230,7 @@ class DownloadTask {
         receivedBytes: (j['receivedBytes'] as int?) ?? 0,
         totalBytes: (j['totalBytes'] as int?) ?? 0,
         error: (j['error'] as String?) ?? '',
+        playableMs: (j['playableMs'] as int?) ?? 0,
         relativePath: (j['relativePath'] as String?) ?? '',
         isHls: (j['isHls'] as bool?) ?? false,
         variantBandwidth: (j['variantBandwidth'] as int?) ?? 0,
@@ -286,6 +296,21 @@ class DownloadLaunch {
   final DownloadGroup group;
   final DownloadTask task;
   const DownloadLaunch({required this.group, required this.task});
+}
+
+/// A still-downloading episode whose finished prefix can start playing now
+/// (边下边播). [playableMs] is the downloaded prefix's duration, i.e. how far
+/// the local playback can go before the online stream takes over.
+class PartialPlayback {
+  final DownloadTask task;
+  final List<String> urls;
+  final int playableMs;
+
+  const PartialPlayback({
+    required this.task,
+    required this.urls,
+    required this.playableMs,
+  });
 }
 
 /// Stable id for one episode download. Title-first so a line/episode reorder

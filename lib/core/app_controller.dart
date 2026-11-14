@@ -240,6 +240,28 @@ class AppController extends ChangeNotifier {
   /// the CMS url. Drives the 「正在播放缓存内容」 pill.
   bool playingFromCache = false;
 
+  /// True while the current episode plays from the finished prefix of a still
+  /// running download (边下边播). When the playhead reaches that prefix the
+  /// controller switches to the online stream automatically.
+  bool playingPartial = false;
+
+  /// Duration of the downloaded prefix backing [playingPartial], for the
+  /// 「已缓存」 hint. Coarse on purpose (refreshed every few seconds).
+  int partialPlayableMs = 0;
+
+  String? _partialTaskId;
+  bool _leavingPartial = false;
+  bool _partialHintShown = false;
+  int _partialNotifyMs = 0;
+
+  /// Switch to the online stream this far before the downloaded prefix ends,
+  /// so the player never runs out of local segments first.
+  static const int _partialSwitchLeadMs = 15 * 1000;
+
+  /// Don't start 边下边播 when the resume position is already this close to
+  /// the prefix end — the switch would happen immediately.
+  static const int _partialResumeMarginMs = 20 * 1000;
+
   // per-title skip profile (mirrors BearTV skipProfiles)
   bool skipEnabled = false;
   int introSec = 0;
@@ -681,8 +703,11 @@ class AppController extends ChangeNotifier {
     _playStarted = false;
     currentItem = item;
     // Remember where we came from so Back leaves the player back to the right
-    // page (search keeps its query + results; home restores the rail card).
-    _playReturnPage = page == AppPage.search ? AppPage.search : AppPage.home;
+    // page (search keeps its query + results; 下载管理 keeps its cards; home
+    // restores the rail card).
+    _playReturnPage = page == AppPage.search
+        ? AppPage.search
+        : (page == AppPage.downloads ? AppPage.downloads : AppPage.home);
     pendingHomeFocusKey = item.key;
     pendingSearchFocusKey = _playReturnPage == AppPage.search ? item.key : null;
     currentDetail = null;
@@ -725,7 +750,8 @@ class AppController extends ChangeNotifier {
     if (detail == null) {
       final sites = selectedSites;
       if (sites.isEmpty) {
-        detail = downloads.snapshotForEntry(entry);
+        detail = downloads.snapshotForEntry(entry) ??
+            downloads.snapshotForItem(item.key);
         if (detail == null) {
           resolving = false;
           playError = '尚未启用任何播放源，请在设置中开启或添加。';
@@ -736,7 +762,9 @@ class AppController extends ChangeNotifier {
       } else {
         detail = await vodRepo.resolveByTitle(item.title, sites);
         if (token != _playToken) return; // superseded by a newer openTitle
-        detail ??= downloads.snapshotForEntry(entry);
+        detail ??=
+            downloads.snapshotForEntry(entry) ??
+                downloads.snapshotForItem(item.key);
       }
     }
 
@@ -920,8 +948,10 @@ class AppController extends ChangeNotifier {
   }) async {
     _playStarted = false;
     currentItem = item;
-    _playReturnPage =
-        returnPage ?? (page == AppPage.search ? AppPage.search : AppPage.home);
+    _playReturnPage = returnPage ??
+        (page == AppPage.search
+            ? AppPage.search
+            : (page == AppPage.downloads ? AppPage.downloads : AppPage.home));
     pendingHomeFocusKey = item.key;
     pendingSearchFocusKey = _playReturnPage == AppPage.search ? item.key : null;
     currentDetail = launch.group.snapshot;
@@ -977,10 +1007,17 @@ class AppController extends ChangeNotifier {
   ///
   /// Single URL→player path for the play page: every episode switch, line
   /// switch, source switch and cache deletion-fallback goes through here. A
-  /// cached episode always wins; its loopback URL is tried first, then the
-  /// plain `file://` one, and only when both fail does the stream fall back to
-  /// the online URL.
-  Future<void> _playCurrent({int resumeMs = 0, bool autoPlay = true}) async {
+  /// completed download always wins; when the episode is still downloading but
+  /// its finished prefix is long enough, that prefix is played instead
+  /// (边下边播) and the playhead hands over to the online stream when it
+  /// catches up. Only when no local transport opens does the episode fall back
+  /// to the online URL.
+  Future<void> _playCurrent({
+    int resumeMs = 0,
+    bool autoPlay = true,
+    bool allowPartial = true,
+    bool reloadDanmaku = true,
+  }) async {
     _introSkipHandled = false;
     _advancing = false;
     // Not "playing" until the stream is ready AND the resume seek has landed:
@@ -999,19 +1036,43 @@ class AppController extends ChangeNotifier {
             episodeTitle: ep.title,
             episodeIndex: episodeIndex,
           );
+    // 边下边播: only for a still-running/paused task, and only when resuming
+    // well inside the downloaded prefix — starting right at its edge would
+    // switch online after a few seconds.
+    PartialPlayback? partial;
+    if (locals.isEmpty && allowPartial && d != null && ep != null) {
+      final p = downloads.partialFor(
+        sourceId: d.sourceId,
+        vodId: d.vodId,
+        episodeUrl: ep.url,
+        episodeTitle: ep.title,
+        episodeIndex: episodeIndex,
+      );
+      if (p != null && resumeMs <= p.playableMs - _partialResumeMarginMs) {
+        partial = p;
+      }
+    }
     playingFromCache = locals.isNotEmpty;
-    if (locals.isNotEmpty) notifyListeners(); // show the pill immediately
+    playingPartial = partial != null;
+    partialPlayableMs = partial?.playableMs ?? 0;
+    _partialNotifyMs = partialPlayableMs;
+    _partialTaskId = partial?.task.id;
+    if (locals.isNotEmpty || playingPartial) {
+      notifyListeners(); // show the pill immediately
+    }
     // Kick danmaku off first: it's an independent HTTP pipeline and must not
     // queue behind the video open/seek/play calls (it used to start only after
     // `play()`, which put the match round-trips behind the stream startup).
-    _loadDanmakuForCurrentEpisode();
-    if (locals.isEmpty) {
+    if (reloadDanmaku) _loadDanmakuForCurrentEpisode();
+    if (locals.isEmpty && !playingPartial) {
       await player.open(ep?.url);
     } else {
-      // Loopback HTTP first, then `file://`. Only when both transports fail
+      // Loopback HTTP first, then `file://`. Only when every transport fails
       // does the episode drop back to the online stream.
+      final urls = locals.isNotEmpty ? locals : partial!.urls;
+      final wasCompleted = locals.isNotEmpty;
       var localReady = false;
-      for (final url in locals) {
+      for (final url in urls) {
         await player.open(url);
         if (player.value.ready) {
           localReady = true;
@@ -1021,12 +1082,20 @@ class AppController extends ChangeNotifier {
       }
       if (!localReady) {
         final online = ep?.url ?? '';
+        playingFromCache = false;
+        playingPartial = false;
+        _partialTaskId = null;
+        partialPlayableMs = 0;
         if (online.isNotEmpty) {
-          playingFromCache = false;
-          showToast('缓存播放失败，已切换在线播放');
+          showToast(wasCompleted ? '缓存播放失败，已切换在线播放' : '缓存片段播放失败，已切换在线播放');
           notifyListeners();
           await player.open(online);
         }
+      } else if (!wasCompleted && !_partialHintShown) {
+        // One hint per session: auto-advancing through several partially
+        // downloaded episodes must not spam toasts.
+        _partialHintShown = true;
+        showToast('已缓存 ${_fmtPartial(partialPlayableMs)}，边下边播中');
       }
     }
     if (resumeMs > 0) await player.seekTo(Duration(milliseconds: resumeMs));
@@ -1037,6 +1106,113 @@ class AppController extends ChangeNotifier {
     }
     await player.setSpeed(speed);
     if (autoPlay) await player.play();
+  }
+
+  /// `mm:ss` / `h:mm:ss` for the 边下边播 hint.
+  static String _fmtPartial(int ms) {
+    final d = Duration(milliseconds: ms);
+    final h = d.inHours;
+    final m = d.inMinutes % 60;
+    final s = (d.inSeconds % 60).toString().padLeft(2, '0');
+    return h > 0 ? '$h:${m.toString().padLeft(2, '0')}:$s' : '$m:$s';
+  }
+
+  /// Live frontier of the downloaded prefix behind [playingPartial].
+  int _partialFrontierMs() {
+    final id = _partialTaskId;
+    final task = id == null ? null : downloads.taskById(id);
+    final fromTask = task?.playableMs ?? 0;
+    return fromTask > partialPlayableMs ? fromTask : partialPlayableMs;
+  }
+
+  /// True duration of the episode being played from a partial prefix (the
+  /// player only knows the prefix's length, which must not reach history).
+  int _partialTotalMs() {
+    final id = _partialTaskId;
+    final total = (id == null ? null : downloads.taskById(id))?.durationMs ?? 0;
+    return total > 0 ? total : player.value.duration.inMilliseconds;
+  }
+
+  /// 边下边播: the playhead is (or is about to be) past the downloaded prefix.
+  /// Continue on the online stream at the same position — one reopen, no
+  /// rewind, no lost progress.
+  Future<void> _leavePartialToOnline({int? seekToMs}) async {
+    if (_leavingPartial || !playingPartial) return;
+    _leavingPartial = true;
+    final wasPlaying = player.value.playing;
+    final position = seekToMs ?? player.value.position.inMilliseconds;
+    playingPartial = false;
+    playingFromCache = false;
+    partialPlayableMs = 0;
+    _partialTaskId = null;
+    final ep = _episodeAt(lineIndex, episodeIndex);
+    notifyListeners();
+    try {
+      if (ep == null || ep.url.trim().isEmpty) {
+        showToast('缓存片段已播完，且没有可用的在线地址');
+        return;
+      }
+      showToast('已追上缓存进度，正在切换在线播放');
+      await _playCurrent(
+        resumeMs: position,
+        autoPlay: page == AppPage.play && wasPlaying,
+        allowPartial: false,
+        reloadDanmaku: false,
+      );
+    } finally {
+      _leavingPartial = false;
+    }
+  }
+
+  /// 边下边播: the download finished while the prefix was playing. Swap to the
+  /// completed local copy so the rest of the episode stays offline (the prefix
+  /// playlist the player holds ends where it was written).
+  Future<void> _leavePartialToCompleted() async {
+    if (_leavingPartial || !playingPartial) return;
+    _leavingPartial = true;
+    final wasPlaying = player.value.playing;
+    final position = player.value.position.inMilliseconds;
+    playingPartial = false;
+    partialPlayableMs = 0;
+    _partialTaskId = null;
+    notifyListeners();
+    try {
+      showToast('下载完成，已切换本地播放');
+      await _playCurrent(
+        resumeMs: position,
+        autoPlay: page == AppPage.play && wasPlaying,
+        allowPartial: false,
+        reloadDanmaku: false,
+      );
+    } finally {
+      _leavingPartial = false;
+    }
+  }
+
+  /// Polled from [_onTick] while [playingPartial]: keep the hint fresh and
+  /// hand over to the online stream (or the completed copy) in time.
+  void _checkPartialFrontier(PlayerValue v) {
+    final id = _partialTaskId;
+    final task = id == null ? null : downloads.taskById(id);
+    if (task == null) {
+      unawaited(_leavePartialToOnline());
+      return;
+    }
+    if (task.status == DownloadStatus.completed) {
+      unawaited(_leavePartialToCompleted());
+      return;
+    }
+    final frontier = task.playableMs;
+    if (frontier <= 0) return;
+    // The pill's number doesn't need second-level accuracy.
+    if (frontier - _partialNotifyMs >= 10000) {
+      _partialNotifyMs = frontier;
+      partialPlayableMs = frontier;
+      notifyListeners();
+    }
+    if (v.position.inMilliseconds >= frontier - _partialSwitchLeadMs) {
+      unawaited(_leavePartialToOnline());
+    }
   }
 
   // --- Offline downloads ----------------------------------------------------
@@ -1111,7 +1287,7 @@ class AppController extends ChangeNotifier {
   /// returning to the play page never references a deleted file.
   Future<void> deleteDownload(DownloadTask task) async {
     final wasCurrent = _isCurrentEpisode(task);
-    final wasCachePlaying = playingFromCache;
+    final wasCachePlaying = playingFromCache || playingPartial;
     final wasPlaying = player.value.playing;
     final position = player.value.position.inMilliseconds;
     if (wasCurrent && wasCachePlaying) {
@@ -1132,7 +1308,7 @@ class AppController extends ChangeNotifier {
   /// Delete every download of a resource group (剧 + 来源).
   Future<void> deleteDownloadGroup(DownloadGroup group) async {
     final wasCurrent = currentDetail?.key == group.key;
-    final wasCachePlaying = playingFromCache;
+    final wasCachePlaying = playingFromCache || playingPartial;
     final wasPlaying = player.value.playing;
     final position = player.value.position.inMilliseconds;
     if (wasCurrent && wasCachePlaying) {
@@ -1195,6 +1371,9 @@ class AppController extends ChangeNotifier {
     required bool wasPlaying,
   }) async {
     playingFromCache = false;
+    playingPartial = false;
+    partialPlayableMs = 0;
+    _partialTaskId = null;
     final ep = _episodeAt(lineIndex, episodeIndex);
     if (ep == null || ep.url.trim().isEmpty) {
       playError = '缓存已删除，且没有可用的在线地址';
@@ -1383,12 +1562,21 @@ class AppController extends ChangeNotifier {
   /// Load the danmaku for a user-picked manual match.
   Future<void> pickDanmakuMatch(DanmakuMatch m) => danmaku.loadFromMatch(m);
 
-  /// Relative seek (fullscreen ←/→). Clamps to [0, duration].
+  /// Relative seek (fullscreen ←/→). Clamps to [0, duration]. Seeking past the
+  /// downloaded prefix while in 边下边播 hands over to the online stream first.
   Future<void> seekBy(Duration delta) async {
     final v = player.value;
     var target = v.position + delta;
     if (target < Duration.zero) target = Duration.zero;
-    if (v.duration > Duration.zero && target > v.duration) target = v.duration;
+    final limit = playingPartial
+        ? Duration(milliseconds: _partialTotalMs())
+        : v.duration;
+    if (limit > Duration.zero && target > limit) target = limit;
+    if (playingPartial &&
+        target.inMilliseconds > _partialFrontierMs() - 3000) {
+      await _leavePartialToOnline(seekToMs: target.inMilliseconds);
+      return;
+    }
     await player.seekTo(target);
   }
 
@@ -1401,16 +1589,36 @@ class AppController extends ChangeNotifier {
     final pos = v.position;
     final dur = v.duration;
 
+    // 边下边播: hand over to the online stream before the downloaded prefix
+    // runs out (or to the completed copy when the download wins the race).
+    if (playingPartial) {
+      _checkPartialFrontier(v);
+    }
+
     if (skipEnabled && introSec > 0 && !_introSkipHandled) {
       if (pos.inSeconds > 0 && pos.inSeconds < introSec) {
         _introSkipHandled = true;
-        player.seekTo(Duration(seconds: introSec));
+        final target = Duration(seconds: introSec);
+        if (playingPartial &&
+            target.inMilliseconds > _partialFrontierMs() - 3000) {
+          // The intro end lies past what is cached: switch online and seek
+          // there in the new stream.
+          unawaited(_leavePartialToOnline(seekToMs: target.inMilliseconds));
+        } else {
+          player.seekTo(target);
+        }
         return;
       }
       if (pos.inSeconds >= introSec) _introSkipHandled = true;
     }
 
-    if (skipEnabled && endingSec > 0 && dur.inMilliseconds > 0 && !_advancing) {
+    // 边下边播's playlist only spans the downloaded prefix, so its duration
+    // is not the episode's: skip the ending-skip rule until we're online.
+    if (skipEnabled &&
+        endingSec > 0 &&
+        dur.inMilliseconds > 0 &&
+        !_advancing &&
+        !playingPartial) {
       if (pos.inMilliseconds >= dur.inMilliseconds - endingSec * 1000) {
         _advancing = true;
         nextEpisode();
@@ -1424,7 +1632,10 @@ class AppController extends ChangeNotifier {
     if (_playStarted && dur.inMilliseconds > 0 && now - _lastSaveMs > 5000) {
       _lastSaveMs = now;
       _persistHistory(
-          positionMs: pos.inMilliseconds, durationMs: dur.inMilliseconds);
+        positionMs: pos.inMilliseconds,
+        durationMs:
+            playingPartial ? _partialTotalMs() : dur.inMilliseconds,
+      );
     }
   }
 
@@ -1710,6 +1921,10 @@ class AppController extends ChangeNotifier {
     _playStarted = false;
     resolving = false;
     playingFromCache = false;
+    playingPartial = false;
+    partialPlayableMs = 0;
+    _partialTaskId = null;
+    _leavingPartial = false;
     danmaku.clear();
     player.pause();
     player.open(null); // VideoAdapter disposes the inner controller here

@@ -277,6 +277,9 @@ void main() {
     // Counts are plain words, not an x/y fraction that reads like the show's
     // total episode count.
     expect(find.text('源一 · 已缓存 0 集 · 缓存中 1 集'), findsOneWidget);
+    // 去播放 is always offered: the play page decides between the partial
+    // prefix, cache and the online stream.
+    expect(find.text('去播放'), findsOneWidget);
     // The header carries the aggregate throughput while something transfers.
     expect(find.textContaining('速度'), findsOneWidget);
 

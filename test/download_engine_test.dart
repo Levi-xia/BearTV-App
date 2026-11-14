@@ -133,6 +133,55 @@ void main() {
     expect(storage.localUrl(task), startsWith('file://'));
   });
 
+  test('publishes the finished prefix as a playable partial playlist',
+      () async {
+    final client = MockClient((req) async {
+      switch (req.url.path) {
+        case '/a.m3u8':
+          return http.Response('''
+#EXTM3U
+#EXTINF:6,
+s1.ts
+#EXTINF:4,
+s2.ts
+#EXT-X-ENDLIST
+''', 200);
+        case '/s1.ts':
+          return http.Response.bytes([1], 200);
+        case '/s2.ts':
+          return http.Response.bytes([2], 200);
+      }
+      return http.Response('nope', 404);
+    });
+    final engine =
+        HttpDownloadEngine(client: client, retryDelay: Duration.zero);
+    final task = _task('https://cdn.test/a.m3u8');
+    final dir = await storage.ensureTaskDir(task);
+    final partial = File('${dir!.path}/partial.m3u8');
+
+    final progress = <DownloadProgress>[];
+    String? atFirstSegment;
+    await run(engine, task, onProgress: (p) {
+      progress.add(p);
+      atFirstSegment ??= partial.existsSync() ? partial.readAsStringSync() : null;
+    });
+
+    // After the first segment only that segment is exposed — the player can
+    // start while the rest is still downloading.
+    expect(atFirstSegment, isNotNull);
+    expect(atFirstSegment, contains('seg_00001.ts'));
+    expect(atFirstSegment, isNot(contains('seg_00002.ts')));
+    expect(atFirstSegment, contains('#EXT-X-ENDLIST'));
+    expect(progress.first.playableMs, 6000);
+    expect(progress.last.playableMs, 10000);
+    expect(progress.last.totalMs, 10000);
+
+    // On completion the prefix covers the whole episode, matching index.m3u8.
+    expect(partial.readAsStringSync(), contains('seg_00002.ts'));
+    expect(storage.hasPartial(task), isTrue);
+    expect(File('${dir.path}/index.m3u8').existsSync(), isTrue);
+  });
+
   test('relative URIs resolve against the final URL after a redirect',
       () async {
     final requested = <String>[];

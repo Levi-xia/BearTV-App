@@ -398,7 +398,8 @@ class _PlayStateBadge extends StatelessWidget {
   }
 }
 
-/// Top-left pill shown while the player is reading a downloaded file. Purely
+/// Top-left pill shown while the player is reading a downloaded file, or the
+/// downloaded prefix of one that is still downloading (边下边播). Purely
 /// informational; focus stays on the player.
 class _CacheBadge extends StatelessWidget {
   const _CacheBadge();
@@ -406,7 +407,11 @@ class _CacheBadge extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final app = AppScope.of(context);
-    if (!app.playingFromCache) return const SizedBox.shrink();
+    final partial = app.playingPartial;
+    if (!app.playingFromCache && !partial) return const SizedBox.shrink();
+    final text = partial
+        ? '边下边播中 · 已缓存 ${_fmt(Duration(milliseconds: app.partialPlayableMs))}'
+        : '正在播放缓存内容';
     return Positioned(
       top: 16,
       left: 16,
@@ -415,15 +420,24 @@ class _CacheBadge extends StatelessWidget {
         decoration: BoxDecoration(
           color: const Color(0x99000000),
           borderRadius: BorderRadius.circular(999),
-          border: Border.all(color: const Color(0x5548E08A)),
+          border: Border.all(
+              color: partial
+                  ? const Color(0x55F2C14E)
+                  : const Color(0x5548E08A)),
         ),
-        child: const Row(
+        child: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Icon(Icons.offline_pin_rounded, size: 17, color: AppColors.live),
-            SizedBox(width: 7),
-            Text('正在播放缓存内容',
-                style: TextStyle(
+            Icon(
+              partial
+                  ? Icons.downloading_rounded
+                  : Icons.offline_pin_rounded,
+              size: 17,
+              color: partial ? const Color(0xFFF2C14E) : AppColors.live,
+            ),
+            const SizedBox(width: 7),
+            Text(text,
+                style: const TextStyle(
                     fontSize: 15,
                     fontWeight: FontWeight.w600,
                     color: AppColors.text,
@@ -456,7 +470,9 @@ class _PlayerControls extends StatelessWidget {
             : '';
         final srcName = app.currentDetail?.sourceName ?? '';
         final speedLabel = v.speed == 1.0 ? '' : ' · ${v.speed}x';
-        final cacheLabel = app.playingFromCache ? ' · 缓存' : '';
+        final cacheLabel = app.playingPartial
+            ? ' · 边下边播'
+            : (app.playingFromCache ? ' · 缓存' : '');
         final label =
             [srcName, epTitle].where((s) => s.isNotEmpty).join(' · ') +
                 speedLabel +

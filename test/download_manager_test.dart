@@ -161,6 +161,18 @@ class FakeEngine implements DownloadEngine {
     ));
   }
 
+  /// Simulates the engine reporting how much of the episode is playable yet.
+  void emitPlayable(String id, int playableMs, {int totalMs = 2700000}) {
+    _sinks[id]!(DownloadProgress(
+      doneSegments: 3,
+      totalSegments: 20,
+      receivedBytes: 300,
+      totalBytes: 1000,
+      playableMs: playableMs,
+      totalMs: totalMs,
+    ));
+  }
+
   void fail(String id, String message) {
     _pending.remove(id)!.completeError(DownloadException(message));
   }
@@ -563,6 +575,40 @@ void main() {
       ),
       isNull,
     );
+  });
+
+  test('a running download exposes its finished prefix for 边下边播', () async {
+    await manager.enqueue(_request(episodes: [0]));
+    await pumpEventQueue();
+    final task = engine.started.single;
+    final dir = await storage.ensureTaskDir(task);
+    File('${dir!.path}/partial.m3u8')
+        .writeAsStringSync('#EXTM3U\n#EXT-X-ENDLIST\n');
+
+    PartialPlayback? lookup() => manager.partialFor(
+          sourceId: 'src1',
+          vodId: 'vod1',
+          episodeUrl: 'https://cdn.test/1/ep0.m3u8',
+          episodeTitle: '第1集',
+          episodeIndex: 0,
+        );
+
+    expect(lookup(), isNull); // nothing downloaded yet
+    engine.emitPlayable(task.id, DownloadManager.minPartialMs - 1000);
+    expect(lookup(), isNull);
+
+    engine.emitPlayable(task.id, DownloadManager.minPartialMs + 30000);
+    final partial = lookup();
+    expect(partial, isNotNull);
+    expect(partial!.playableMs, DownloadManager.minPartialMs + 30000);
+    expect(partial.urls.single, startsWith('http://127.0.0.1:'));
+    expect(partial.urls.single, endsWith('partial.m3u8'));
+    // The full episode duration is tracked for the history record.
+    expect(manager.taskById(task.id)!.durationMs, 2700000);
+
+    // Once the download completes, the completed copy takes over.
+    await engine.complete(task.id);
+    expect(lookup(), isNull);
   });
 
   test('init pauses interrupted downloads and drops vanished completed files',

@@ -15,6 +15,7 @@ import 'local_media_server.dart';
 ///   <hash(sourceId:vodId)>/
 ///     <taskId>/
 ///       index.m3u8        HLS entry (written last, atomically)
+///       partial.m3u8      HLS prefix, refreshed while downloading (边下边播)
 ///       source.m3u8       original media playlist (resume fingerprint)
 ///       manifest.json     segment identities for resume validation
 ///       seg_00001.ts ...
@@ -160,6 +161,33 @@ class DownloadStorage {
   String? localUrl(DownloadTask task) {
     final urls = localUrls(task);
     return urls.isEmpty ? null : urls.first;
+  }
+
+  /// Entry playlist for 边下边播: the finished HLS prefix of a still-running
+  /// download (`partial.m3u8`). Null when storage is unavailable.
+  File? partialFile(DownloadTask task) {
+    final dir = taskDir(task);
+    if (dir == null) return null;
+    return File(_join(dir.path, 'partial.m3u8'));
+  }
+
+  bool hasPartial(DownloadTask task) {
+    final f = partialFile(task);
+    try {
+      return f != null && f.existsSync() && f.lengthSync() > 0;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /// Playback URLs for a partially downloaded episode, over the loopback
+  /// transport only. `file://` is deliberately not offered here: the native
+  /// player can't reliably resolve a local playlist's segment URIs (see
+  /// [localUrls]), and a partially populated directory would be worse.
+  List<String> partialUrls(DownloadTask task) {
+    if (!hasPartial(task)) return const [];
+    final served = mediaServer?.urlForFile(partialFile(task)!);
+    return served == null ? const [] : [served];
   }
 
   Future<void> deleteTask(DownloadTask task) async {

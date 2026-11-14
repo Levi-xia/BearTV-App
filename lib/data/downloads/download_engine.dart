@@ -34,11 +34,22 @@ class DownloadProgress {
   final int receivedBytes;
   final int totalBytes;
 
+  /// HLS only: duration of the downloaded prefix that the partial playlist
+  /// currently exposes, i.e. how much of the episode is playable from disk.
+  /// Always matches the `partial.m3u8` on disk, so the playhead can never run
+  /// past the segments the player knows about.
+  final int playableMs;
+
+  /// HLS only: full episode duration (the prefix's target for 边下边播).
+  final int totalMs;
+
   const DownloadProgress({
     this.doneSegments = 0,
     this.totalSegments = 0,
     this.receivedBytes = 0,
     this.totalBytes = 0,
+    this.playableMs = 0,
+    this.totalMs = 0,
   });
 
   double get fraction {
@@ -280,17 +291,24 @@ class HttpDownloadEngine implements DownloadEngine {
       mapNames[map] = name;
     }
 
-    final segmentNames = <String>[];
+    // Names for every segment up front: the partial playlist written for
+    // 边下边播 must reference segments that are still being fetched.
+    final segmentNames = <String>[
+      for (var i = 0; i < playlist.segments.length; i++)
+        _segmentName(i, playlist.segments[i].uri),
+    ];
     var done = 0;
     var bytes = 0;
+    var prefixMs = 0;
+    var writtenMs = 0;
+    var wrotePartial = false;
+    final partialWatch = Stopwatch()..start();
     for (var i = 0; i < playlist.segments.length; i++) {
       cancel.throwIfCancelled();
       final seg = playlist.segments[i];
       final uri = seg.uri;
-      if (uri == null) continue;
-      final name =
-          'seg_${(i + 1).toString().padLeft(5, '0')}${_extFor(uri.toString())}';
-      segmentNames.add(name);
+      final name = segmentNames[i];
+      if (uri == null || name.isEmpty) continue;
       final file = File(_join(dir.path, name));
       if (await _hasBytes(file, expected: seg.rangeLength)) {
         done++;
@@ -311,10 +329,33 @@ class HttpDownloadEngine implements DownloadEngine {
         done++;
         bytes += data.length;
       }
+      prefixMs += (seg.duration * 1000).round();
+      // Refresh the playable prefix playlist at most every few seconds: the
+      // player only needs it to keep moving forward, and rebuilding an
+      // ever-longer playlist per segment is wasted I/O on weak boxes.
+      final last = i == playlist.segments.length - 1;
+      if (!wrotePartial || last || partialWatch.elapsedMilliseconds >= 3000) {
+        final ok = await _writePartialPlaylist(
+          dir,
+          playlist,
+          keyNames: keyNames,
+          mapNames: mapNames,
+          segmentNames: segmentNames,
+          count: i + 1,
+          durationMs: prefixMs,
+        );
+        if (ok) {
+          writtenMs = prefixMs;
+          wrotePartial = true;
+          partialWatch.reset();
+        }
+      }
       onProgress(DownloadProgress(
         doneSegments: done,
         totalSegments: playlist.segments.length,
         receivedBytes: bytes,
+        playableMs: writtenMs,
+        totalMs: playlist.durationMs,
       ));
     }
 
@@ -348,8 +389,59 @@ class HttpDownloadEngine implements DownloadEngine {
     );
   }
 
-  // --- Direct files ---------------------------------------------------------
+  /// Local file name for segment [index] (0-based). Shared by the downloader
+  /// and the partial playlist so both always agree on the layout.
+  static String _segmentName(int index, Uri? uri) {
+    if (uri == null) return '';
+    return 'seg_${(index + 1).toString().padLeft(5, '0')}'
+        '${_extFor(uri.toString())}';
+  }
 
+  /// Writes `partial.m3u8`: a self-contained VOD playlist for the finished
+  /// prefix, so a player can start before the whole episode is on disk
+  /// (边下边播). Atomic (tmp + rename) and best-effort — a failed write only
+  /// delays the playable prefix, never the download itself.
+  Future<bool> _writePartialPlaylist(
+    Directory dir,
+    M3u8MediaPlaylist playlist, {
+    required Map<M3u8Key, String> keyNames,
+    required Map<M3u8Map, String> mapNames,
+    required List<String> segmentNames,
+    required int count,
+    required int durationMs,
+  }) async {
+    try {
+      final prefix = M3u8MediaPlaylist(
+        segments: playlist.segments.sublist(0, count),
+        keys: playlist.keys,
+        maps: playlist.maps,
+        mediaSequence: playlist.mediaSequence,
+        finished: true,
+        durationMs: durationMs,
+      );
+      final text = M3u8Parser.rewrite(
+        prefix,
+        keyNames: keyNames,
+        mapNames: mapNames,
+        segmentNames: segmentNames.sublist(0, count),
+      );
+      final target = File(_join(dir.path, 'partial.m3u8'));
+      final tmp = File(_join(dir.path, 'partial.m3u8.tmp'));
+      await tmp.writeAsString(text, flush: true);
+      try {
+        await tmp.rename(target.path);
+      } catch (_) {
+        // Windows/older POSIX fails to rename over an existing file.
+        if (await target.exists()) await target.delete();
+        await tmp.rename(target.path);
+      }
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  // --- Direct files ---------------------------------------------------------
   Future<DownloadResult> _downloadDirect(
     DownloadTask task,
     Directory dir,
@@ -656,6 +748,7 @@ Future<void> _clearFragments(Directory dir) async {
       if (name.startsWith('seg_') ||
           name.startsWith('key_') ||
           name.startsWith('init_') ||
+          name.startsWith('partial.m3u8') ||
           name == 'index.m3u8.tmp') {
         try {
           await entity.delete();
