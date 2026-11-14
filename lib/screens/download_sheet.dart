@@ -6,6 +6,7 @@ import '../core/theme.dart';
 import '../data/downloads/download_models.dart';
 import '../widgets/chips.dart';
 import '../widgets/episode_pager.dart';
+import '../widgets/focus_fx.dart';
 
 /// 下载选集 sheet, opened from the play page (side panel or fullscreen menu).
 ///
@@ -182,8 +183,11 @@ class _DownloadSheetState extends State<DownloadSheet> {
               constraints: BoxConstraints(
                 maxHeight: MediaQuery.sizeOf(context).height * 0.78,
               ),
-              padding:
-                  const EdgeInsets.fromLTRB(AppDims.pad, 26, AppDims.pad, 34),
+              padding: const EdgeInsets.fromLTRB(
+                  AppDims.pad - kFocusSlack,
+                  26 - kFocusSlack,
+                  AppDims.pad - kFocusSlack,
+                  34 - kFocusSlack),
               decoration: const BoxDecoration(
                 gradient: LinearGradient(
                   begin: Alignment.bottomCenter,
@@ -193,6 +197,11 @@ class _DownloadSheetState extends State<DownloadSheet> {
                 borderRadius: BorderRadius.vertical(top: Radius.circular(26)),
               ),
               child: SingleChildScrollView(
+                // 全部下载 is the leftmost widget on its row, i.e. flush with
+                // this viewport's clip rect; the slack keeps its focused scale
+                // and glow from being sliced off. The container padding above
+                // was trimmed by the same amount, so nothing visibly moves.
+                padding: const EdgeInsets.all(kFocusSlack),
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   mainAxisSize: MainAxisSize.min,

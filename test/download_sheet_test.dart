@@ -226,6 +226,33 @@ void main() {
     expect(find.textContaining('✓ 已缓存'), findsOneWidget);
   });
 
+  testWidgets('the focused 全部下载 pill is not clipped by the sheet scroller',
+      (tester) async {
+    await seed(tester, [0]);
+    await pumpSheet(tester);
+
+    // 全部下载 is the leftmost widget on its row, i.e. flush with the scroll
+    // viewport's clip rect. FocusFx.scale paints 1.06× the layout box, so the
+    // scaled box must still fit inside the viewport or the pill's corners get
+    // sliced off.
+    final clip = tester.getRect(find
+        .ancestor(
+            of: find.text('全部下载'), matching: find.byType(SingleChildScrollView))
+        .first);
+    final box = tester.getRect(find
+        .ancestor(of: find.text('全部下载'), matching: find.byType(AnimatedScale))
+        .first);
+    final scaled = Rect.fromCenter(
+        center: box.center, width: box.width * 1.06, height: box.height * 1.06);
+
+    expect(clip.contains(scaled.topLeft), isTrue,
+        reason: 'top-left $scaled outside $clip');
+    expect(clip.contains(scaled.bottomRight), isTrue,
+        reason: 'bottom-right $scaled outside $clip');
+    // ...and it really is the edge case: the button hugs the clip rect.
+    expect(scaled.left, lessThan(clip.left + 20));
+  });
+
   testWidgets('pressing OK on an episode adds it immediately, no confirm step',
       (tester) async {
     await seed(tester, [0]);

@@ -94,10 +94,12 @@ AppController _controller({int episodes = 20, int episodeIndex = 0}) {
   return c;
 }
 
-Future<void> _pump(WidgetTester tester, AppController c) async {
-  // TV-sized surface: a RenderFlex overflow at 1080p would fail the test.
+Future<void> _pump(WidgetTester tester, AppController c,
+    {Size size = const Size(1920, 1080)}) async {
+  // TV-sized surface: a RenderFlex overflow at any common TV resolution fails
+  // the test.
   tester.view.devicePixelRatio = 1.0;
-  tester.view.physicalSize = const Size(1920, 1080);
+  tester.view.physicalSize = size;
   addTearDown(tester.view.reset);
   // MaterialApp supplies the arrow-key → directional-traversal shortcuts the
   // real app gets from `MaterialApp` in app.dart; without it arrow presses are
@@ -135,7 +137,7 @@ void main() {
     await _press(tester, LogicalKeyboardKey.arrowDown);
 
     expect(find.text('选集'), findsOneWidget);
-    expect(find.text('▶ 播放下一集'), findsOneWidget);
+    expect(find.text('播放下一集'), findsOneWidget);
     // "↓ then OK" must be enough to continue watching.
     expect(tester.binding.focusManager.primaryFocus?.debugLabel,
         'episodeSheetNext');
@@ -143,7 +145,39 @@ void main() {
     await _press(tester, LogicalKeyboardKey.select);
 
     expect(c.episodeIndex, 1);
-    expect(find.text('▶ 播放下一集'), findsNothing); // drawer closed
+    expect(find.text('选集'), findsNothing); // drawer closed
+  });
+
+  testWidgets('the focused 播放下一集 pill is not clipped by the drawer scroller',
+      (tester) async {
+    final c = _controller();
+    addTearDown(c.dispose);
+    await _pump(tester, c);
+
+    await _press(tester, LogicalKeyboardKey.arrowDown);
+
+    // FocusFx.scale paints 1.06× the layout box, and the sheet's scroll view
+    // clips at its viewport edge. The CTA sits on that edge, so the scaled box
+    // has to fit inside it — otherwise the focused pill's corners get sliced
+    // off (the reported "切出来棱角").
+    final clip = tester.getRect(find
+        .ancestor(
+            of: find.text('播放下一集'),
+            matching: find.byType(SingleChildScrollView))
+        .first);
+    final box = tester.getRect(find
+        .ancestor(
+            of: find.text('播放下一集'), matching: find.byType(AnimatedScale))
+        .first);
+    final scaled = Rect.fromCenter(
+        center: box.center, width: box.width * 1.06, height: box.height * 1.06);
+
+    expect(clip.contains(scaled.topLeft), isTrue,
+        reason: 'top-left $scaled outside $clip');
+    expect(clip.contains(scaled.bottomRight), isTrue,
+        reason: 'bottom-right $scaled outside $clip');
+    // ...and it really is the edge case: the CTA hugs the clip rect.
+    expect(scaled.right, greaterThan(clip.right - 20));
   });
 
   testWidgets('the shortcut is hidden on the last episode', (tester) async {
@@ -154,8 +188,23 @@ void main() {
     await _press(tester, LogicalKeyboardKey.arrowDown);
 
     expect(find.text('选集'), findsOneWidget);
-    expect(find.text('▶ 播放下一集'), findsNothing);
+    expect(find.text('播放下一集'), findsNothing);
   });
+
+  for (final size in const [Size(1280, 720), Size(960, 540)]) {
+    testWidgets(
+        'the drawer and its next-episode CTA fit ${size.width.toInt()}x${size.height.toInt()}',
+        (tester) async {
+      final c = _controller();
+      addTearDown(c.dispose);
+      await _pump(tester, c, size: size);
+
+      await _press(tester, LogicalKeyboardKey.arrowDown);
+
+      expect(find.text('播放下一集'), findsOneWidget);
+      expect(tester.takeException(), isNull); // no RenderFlex overflow
+    });
+  }
 
   testWidgets('↓ falls back to the progress OSD with nothing to pick',
       (tester) async {

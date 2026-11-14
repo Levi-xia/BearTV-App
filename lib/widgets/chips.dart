@@ -1,5 +1,5 @@
+import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:flutter/widgets.dart';
 
 import '../core/theme.dart';
 import 'focus_fx.dart';
@@ -145,6 +145,12 @@ class ActionButton extends StatelessWidget {
 /// Episode cell in the 选集 grid (`.ep`), with a `current` playing state and
 /// optional download [selected] / [badge] (e.g. 「✓ 已缓存」「下载中」).
 ///
+/// The current episode gets a cyan wash, a soft glow and a small play glyph in
+/// place of the old text-marker, so "where am I" reads at a glance from the
+/// sofa without lengthening the label. All states keep the same footprint
+/// (min height + fixed-width parent): focus only animates scale and colours, so
+/// the grid never reflows under the D-pad.
+///
 /// [disabled] greys the cell out (already cached / already in the queue) while
 /// keeping its [badge] readable — the download sheet uses it so a cached
 /// episode can't be added twice.
@@ -166,7 +172,7 @@ class EpisodeCell extends StatelessWidget {
   final VoidCallback onPressed;
   final bool selected;
 
-  /// Small trailing status label shown instead of the ▶ marker.
+  /// Small trailing status label (e.g. 「✓ 已缓存」「下载中」).
   final String? badge;
 
   /// Dimmed style; the press handler is still wired so focus never lands on a
@@ -184,50 +190,127 @@ class EpisodeCell extends StatelessWidget {
       focusNode: focusNode,
       ensureVisibleAlignment: 0.5,
       builder: (context, focused) {
-        final highlighted = !disabled && (selected || current);
-        final base = BoxDecoration(
-          color: highlighted ? const Color(0x1F00E5FF) : AppColors.glass,
-          borderRadius: BorderRadius.circular(13),
-          border: Border.all(
-            color: highlighted ? const Color(0x8C00E5FF) : AppColors.hairline,
-            width: selected ? 2 : 1,
-          ),
-        );
-        final suffix = (badge != null && badge!.isNotEmpty)
-            ? ' ${badge!}'
-            : (!disabled && current ? ' ▶' : '');
-        final Color idleColor;
-        if (disabled) {
-          idleColor = const Color(0x66CDDBEF);
-        } else if (highlighted) {
-          idleColor = AppColors.text;
+        final active = !disabled && (selected || current);
+        final badgeText = (badge ?? '').trim();
+        final Color labelColor;
+        if (focused) {
+          labelColor = AppColors.focusInk;
+        } else if (disabled) {
+          labelColor = const Color(0x80CDDBEF);
+        } else if (active) {
+          labelColor = const Color(0xFFEAF8FF);
         } else {
-          idleColor = const Color(0xFFCDDBEF);
+          labelColor = const Color(0xFFCDDBEF);
         }
+        final Color accentColor =
+            focused ? AppColors.focusInk : AppColors.accent2;
+
+        final base = BoxDecoration(
+          // Washed fill + hairline, so the cells read as a deliberate surface
+          // rather than floating text on the page gradient.
+          gradient: LinearGradient(
+            begin: Alignment.topCenter,
+            end: Alignment.bottomCenter,
+            colors: active
+                ? const [Color(0x2E00E5FF), Color(0x1200E5FF)]
+                : const [Color(0x17FFFFFF), Color(0x0AFFFFFF)],
+          ),
+          borderRadius: BorderRadius.circular(14),
+          border: Border.all(
+            color: active ? const Color(0x8C00E5FF) : AppColors.hairline,
+            width: active ? 1.5 : 1,
+          ),
+          boxShadow: active
+              ? const [
+                  BoxShadow(
+                      color: Color(0x2E00E5FF),
+                      blurRadius: 20,
+                      spreadRadius: -8),
+                ]
+              : null,
+        );
         return Opacity(
           opacity: disabled ? 0.55 : 1,
           child: FocusFx.scale(
             focused,
-            Container(
-              padding: const EdgeInsets.symmetric(vertical: 16),
+            AnimatedContainer(
+              duration: const Duration(milliseconds: 180),
+              curve: kEase,
+              constraints: const BoxConstraints(minHeight: 54),
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
               alignment: Alignment.center,
-              decoration: focused ? FocusFx.pill(focused, radius: 13) : base,
-              child: Text(
-                '$label$suffix',
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                textAlign: TextAlign.center,
-                style: TextStyle(
-                  fontSize: 17,
-                  color: focused ? AppColors.focusInk : idleColor,
-                  fontWeight: focused ? FontWeight.w700 : FontWeight.w400,
-                  fontFamilyFallback: kFontFallback,
-                ),
+              decoration: focused ? FocusFx.pill(focused, radius: 14) : base,
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  if (current && !disabled) ...[
+                    _CellBadge(
+                      icon: Icons.play_arrow_rounded,
+                      color: accentColor,
+                    ),
+                    const SizedBox(width: 6),
+                  ] else if (selected && !disabled) ...[
+                    _CellBadge(icon: Icons.check_rounded, color: accentColor),
+                    const SizedBox(width: 6),
+                  ],
+                  Flexible(
+                    child: Text(
+                      label,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      textAlign: TextAlign.center,
+                      style: TextStyle(
+                        fontSize: 17,
+                        color: labelColor,
+                        fontWeight: focused ? FontWeight.w700 : FontWeight.w500,
+                        fontFamilyFallback: kFontFallback,
+                      ),
+                    ),
+                  ),
+                  if (badgeText.isNotEmpty) ...[
+                    const SizedBox(width: 6),
+                    Text(
+                      badgeText,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: focused
+                            ? const Color(0xB304121F)
+                            : (active ? AppColors.accent2 : AppColors.textDim),
+                        fontWeight: FontWeight.w600,
+                        fontFamilyFallback: kFontFallback,
+                      ),
+                    ),
+                  ],
+                ],
               ),
             ),
           ),
         );
       },
+    );
+  }
+}
+
+/// Tiny circular glyph that marks the current / selected episode.
+class _CellBadge extends StatelessWidget {
+  const _CellBadge({required this.icon, required this.color});
+  final IconData icon;
+  final Color color;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: 18,
+      height: 18,
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.18),
+        shape: BoxShape.circle,
+      ),
+      alignment: Alignment.center,
+      child: Icon(icon, size: 13, color: color),
     );
   }
 }

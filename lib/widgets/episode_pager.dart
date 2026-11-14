@@ -2,6 +2,7 @@ import 'package:flutter/widgets.dart';
 
 import '../data/vod/cms_models.dart';
 import 'chips.dart';
+import 'focus_fx.dart';
 
 /// Number of episodes shown per page in [EpisodePager].
 const int kEpisodesPerPage = 100;
@@ -132,6 +133,12 @@ class _EpisodePagerState extends State<EpisodePager> {
             key: _viewportKey,
             controller: _chips,
             scrollDirection: Axis.horizontal,
+            // A horizontal viewport clips at the row's own height / edges, so
+            // the focused chip's 1.06 scale and glow would be sliced off at the
+            // ends. The slack keeps them intact; the grid below starts a little
+            // lower, which is harmless and only applies past 100 episodes.
+            padding: const EdgeInsets.symmetric(
+                horizontal: 8, vertical: kFocusSlack / 2),
             child: Row(
               children: [
                 for (var p = 0; p < pageCount; p++)

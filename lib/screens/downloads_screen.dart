@@ -221,8 +221,11 @@ class _DownloadsScreenState extends State<DownloadsScreen> {
                   child: groups.isEmpty
                       ? _empty()
                       : ListView.separated(
+                          // Top slack: the first card's focused 1.06 scale and
+                          // glow must not be cut by the viewport edge (the
+                          // card is flush with it at scroll offset 0).
                           padding: const EdgeInsets.fromLTRB(
-                              AppDims.pad, 0, AppDims.pad, 40),
+                              AppDims.pad, 12, AppDims.pad, 40),
                           itemCount: groups.length,
                           separatorBuilder: (_, __) =>
                               const SizedBox(height: 14),

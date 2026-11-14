@@ -884,7 +884,9 @@ class _ActionSheetState extends State<_ActionSheet> {
                 width: 720,
                 constraints: BoxConstraints(
                     maxHeight: MediaQuery.sizeOf(context).height * 0.72),
-                padding: const EdgeInsets.fromLTRB(30, 24, 30, 28),
+                padding: const EdgeInsets.fromLTRB(
+                    30 - kFocusSlack, 24 - kFocusSlack, 30 - kFocusSlack,
+                    28 - kFocusSlack),
                 decoration: BoxDecoration(
                   color: AppColors.cardBg,
                   borderRadius: BorderRadius.circular(22),
@@ -923,7 +925,14 @@ class _ActionSheetState extends State<_ActionSheet> {
                     ),
                     const SizedBox(height: 18),
                     Flexible(
-                      child: SingleChildScrollView(child: _body()),
+                      // Slack inside the viewport: chips/cells sit flush with
+                      // its edges, and a focused pill's 1.06 scale would be
+                      // clipped there (the container padding above was trimmed
+                      // by the same amount, so nothing moves).
+                      child: SingleChildScrollView(
+                        padding: const EdgeInsets.all(kFocusSlack),
+                        child: _body(),
+                      ),
                     ),
                   ],
                 ),
@@ -1603,7 +1612,11 @@ class _FullscreenMenuState extends State<_FullscreenMenu> {
           constraints: BoxConstraints(
             maxHeight: MediaQuery.sizeOf(context).height * 0.6,
           ),
-          padding: const EdgeInsets.fromLTRB(AppDims.pad, 26, AppDims.pad, 34),
+          padding: const EdgeInsets.fromLTRB(
+              AppDims.pad - kFocusSlack,
+              26 - kFocusSlack,
+              AppDims.pad - kFocusSlack,
+              34 - kFocusSlack),
           decoration: const BoxDecoration(
             gradient: LinearGradient(
               begin: Alignment.bottomCenter,
@@ -1613,6 +1626,10 @@ class _FullscreenMenuState extends State<_FullscreenMenu> {
             borderRadius: BorderRadius.vertical(top: Radius.circular(26)),
           ),
           child: SingleChildScrollView(
+            // Slack inside the viewport keeps a focused tile's 1.06 scale and
+            // glow out of the clip rect (the padding above was trimmed to
+            // match, so nothing moves on screen).
+            padding: const EdgeInsets.all(kFocusSlack),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               mainAxisSize: MainAxisSize.min,
@@ -1703,16 +1720,9 @@ class _EpisodeSheetState extends State<_EpisodeSheet> {
     final unit = episodeUnit(eps);
     final hasNext = app.hasNextEpisode;
     final nextIndex = app.episodeIndex + 1;
-    // "第 6 集" already says it is the next one; only sources that send a real
-    // episode name get the extra text, so the label never reads 下一集 · 第6集.
     final nextLabel = hasNext
         ? episodeLabel(eps[nextIndex].title, nextIndex, unit: unit)
         : '';
-    final nextHint = !hasNext
-        ? ''
-        : nextLabel == '第 ${nextIndex + 1} $unit'
-            ? '下一集'
-            : '下一集 · $nextLabel';
 
     return Align(
       alignment: Alignment.bottomCenter,
@@ -1731,7 +1741,11 @@ class _EpisodeSheetState extends State<_EpisodeSheet> {
           constraints: BoxConstraints(
             maxHeight: MediaQuery.sizeOf(context).height * 0.68,
           ),
-          padding: const EdgeInsets.fromLTRB(AppDims.pad, 26, AppDims.pad, 34),
+          padding: const EdgeInsets.fromLTRB(
+              AppDims.pad - kFocusSlack,
+              26 - kFocusSlack,
+              AppDims.pad - kFocusSlack,
+              34 - kFocusSlack),
           decoration: const BoxDecoration(
             gradient: LinearGradient(
               begin: Alignment.bottomCenter,
@@ -1741,6 +1755,11 @@ class _EpisodeSheetState extends State<_EpisodeSheet> {
             borderRadius: BorderRadius.vertical(top: Radius.circular(26)),
           ),
           child: SingleChildScrollView(
+            // The 播放下一集 CTA sits on this viewport's right/top edge; the
+            // slack keeps its focused scale and glow from being sliced by the
+            // clip rect. The container padding was reduced to match, so the
+            // visual layout is byte-for-byte the same.
+            padding: const EdgeInsets.all(kFocusSlack),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               mainAxisSize: MainAxisSize.min,
@@ -1760,33 +1779,15 @@ class _EpisodeSheetState extends State<_EpisodeSheet> {
                             color: AppColors.textDim,
                             fontFamilyFallback: kFontFallback)),
                     const Spacer(),
-                    if (hasNext) ...[
-                      Flexible(
-                        child: Text(
-                          nextHint,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          textAlign: TextAlign.right,
-                          style: const TextStyle(
-                              fontSize: 14,
-                              color: AppColors.textDim,
-                              fontFamilyFallback: kFontFallback),
-                        ),
+                    if (hasNext)
+                      _NextEpisodeButton(
+                        focusNode: _nextNode,
+                        episode: nextLabel,
+                        onPressed: () {
+                          widget.onClose();
+                          app.nextEpisode();
+                        },
                       ),
-                      const SizedBox(width: 14),
-                      SizedBox(
-                        width: 220,
-                        child: ActionButton(
-                          label: '▶ 播放下一集',
-                          primary: true,
-                          focusNode: _nextNode,
-                          onPressed: () {
-                            widget.onClose();
-                            app.nextEpisode();
-                          },
-                        ),
-                      ),
-                    ],
                   ],
                 ),
                 const SizedBox(height: 18),
@@ -1804,6 +1805,119 @@ class _EpisodeSheetState extends State<_EpisodeSheet> {
           ),
         ),
       ),
+    );
+  }
+}
+
+/// The 选集 drawer's primary action: play the next episode.
+///
+/// A two-line button (action + the episode it starts) with a play glyph, so it
+/// reads as the sheet's main CTA next to the flat 选集 title. It takes focus on
+/// open (see [_EpisodeSheetState.initState]), making "↓ then OK" the two-press
+/// way to continue watching.
+class _NextEpisodeButton extends StatelessWidget {
+  const _NextEpisodeButton({
+    required this.focusNode,
+    required this.episode,
+    required this.onPressed,
+  });
+
+  final FocusNode focusNode;
+
+  /// The episode the shortcut starts, e.g. 「第 6 集」.
+  final String episode;
+  final VoidCallback onPressed;
+
+  @override
+  Widget build(BuildContext context) {
+    return Focusable(
+      onPressed: onPressed,
+      focusNode: focusNode,
+      builder: (context, focused) {
+        final base = BoxDecoration(
+          gradient: const LinearGradient(
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+            colors: [Color(0x5C4EA8FF), Color(0x2E00E5FF)],
+          ),
+          borderRadius: BorderRadius.circular(18),
+          border: Border.all(color: const Color(0x8000E5FF), width: 1.5),
+          boxShadow: const [
+            BoxShadow(
+                color: Color(0x33009EFF),
+                blurRadius: 26,
+                spreadRadius: -6,
+                offset: Offset(0, 10)),
+          ],
+        );
+        return FocusFx.scale(
+          focused,
+          AnimatedContainer(
+            duration: const Duration(milliseconds: 180),
+            curve: kEase,
+            width: 252,
+            height: 68,
+            padding: const EdgeInsets.symmetric(horizontal: 14),
+            decoration: focused ? FocusFx.pill(focused, radius: 18) : base,
+            child: Row(
+              children: [
+                Container(
+                  width: 36,
+                  height: 36,
+                  decoration: BoxDecoration(
+                    shape: BoxShape.circle,
+                    color: focused
+                        ? const Color(0x2404121F)
+                        : const Color(0x2EFFFFFF),
+                    border: Border.all(
+                        color: focused
+                            ? const Color(0x3304121F)
+                            : const Color(0x5CFFFFFF),
+                        width: 1),
+                  ),
+                  alignment: Alignment.center,
+                  child: Icon(Icons.play_arrow_rounded,
+                      size: 22,
+                      color: focused ? AppColors.focusInk : AppColors.text),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Text(
+                        '播放下一集',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          fontSize: 17,
+                          fontWeight: FontWeight.w700,
+                          color: focused ? AppColors.focusInk : AppColors.text,
+                          fontFamilyFallback: kFontFallback,
+                        ),
+                      ),
+                      const SizedBox(height: 3),
+                      Text(
+                        episode,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          fontSize: 13,
+                          color: focused
+                              ? const Color(0xB304121F)
+                              : AppColors.textDim,
+                          fontFamilyFallback: kFontFallback,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
     );
   }
 }
