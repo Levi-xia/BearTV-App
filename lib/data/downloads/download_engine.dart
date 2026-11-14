@@ -262,7 +262,7 @@ class HttpDownloadEngine implements DownloadEngine {
         if (bytes.isEmpty) {
           throw const DownloadException('解密密钥为空');
         }
-        await file.writeAsBytes(bytes, flush: true);
+        await _writeAtomic(file, bytes);
       }
       keyNames[key] = name;
     }
@@ -286,7 +286,7 @@ class HttpDownloadEngine implements DownloadEngine {
           length: map.rangeLength,
           cancel: cancel,
         );
-        await file.writeAsBytes(bytes, flush: true);
+        await _writeAtomic(file, bytes);
       }
       mapNames[map] = name;
     }
@@ -325,7 +325,7 @@ class HttpDownloadEngine implements DownloadEngine {
           // player can't skip over; fail the task instead of marking it done.
           throw const DownloadException('分段数据为空');
         }
-        await file.writeAsBytes(data, flush: true);
+        await _writeAtomic(file, data);
         done++;
         bytes += data.length;
       }
@@ -716,6 +716,18 @@ Future<bool> _hasBytes(File file, {int? expected}) async {
   } catch (_) {
     return false;
   }
+}
+
+/// Writes [bytes] to [file] through a sibling `.part` file.
+///
+/// A process kill used to leave a truncated segment behind that [_hasBytes]
+/// accepted on the next run, so the cached playlist pointed at a corrupt
+/// fragment. Renaming is atomic on every platform we ship: either the whole
+/// segment is there or the resume pass fetches it again.
+Future<void> _writeAtomic(File file, List<int> bytes) async {
+  final part = File('${file.path}.part');
+  await part.writeAsBytes(bytes, flush: true);
+  await part.rename(file.path);
 }
 
 Future<bool> _hasFile(File file) async {

@@ -53,18 +53,21 @@ class _NebulaAppState extends State<NebulaApp> with WidgetsBindingObserver {
     super.dispose();
   }
 
-  /// Downloads only run in-app: when the app goes to the background we cancel
-  /// the active transfer but keep the partial files, then resume on return
-  /// (only the tasks we paused ourselves — a user pause stays paused).
+  /// Downloads keep running while the Android foreground service is up (see
+  /// [DownloadManager.handleAppBackgrounded]). When the system refuses to start
+  /// it — or on platforms without one — we pause instead, so a background kill
+  /// can't truncate an in-flight segment. Detached means the engine is going
+  /// away, so the queue pauses and the service stops either way.
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     switch (state) {
       case AppLifecycleState.paused:
       case AppLifecycleState.hidden:
+        _controller.downloads.handleAppBackgrounded();
       case AppLifecycleState.detached:
-        _controller.downloads.pauseActiveForLifecycle();
+        _controller.downloads.handleAppDetached();
       case AppLifecycleState.resumed:
-        _controller.downloads.resumeAutoPaused();
+        _controller.downloads.handleAppForegrounded();
       case AppLifecycleState.inactive:
         break;
     }

@@ -15,9 +15,47 @@ import java.security.MessageDigest
 class MainActivity : FlutterActivity() {
     private var updaterChannel: MethodChannel? = null
     private var storageChannel: MethodChannel? = null
+    private var downloadsChannel: MethodChannel? = null
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
+
+        // Keeps downloads running while the app is in the background; Dart
+        // falls back to pausing when the start is refused.
+        downloadsChannel =
+            MethodChannel(flutterEngine.dartExecutor.binaryMessenger, DOWNLOADS_CHANNEL)
+        downloadsChannel?.setMethodCallHandler { call, result ->
+                val title = call.argument<String>("title") ?: ""
+                val text = call.argument<String>("text") ?: ""
+                val progress = call.argument<Int>("progress") ?: -1
+                val max = call.argument<Int>("max") ?: 0
+                when (call.method) {
+                    "start" -> result.success(
+                        if (DownloadForegroundService.isRunning()) {
+                            // Already up: refreshing avoids a redundant start
+                            // call, which Android 12+ can refuse from the
+                            // background.
+                            DownloadForegroundService.update(title, text, progress, max)
+                        } else {
+                            DownloadForegroundService.start(
+                                this,
+                                title,
+                                text,
+                                progress,
+                                max,
+                            )
+                        },
+                    )
+                    "update" -> result.success(
+                        DownloadForegroundService.update(title, text, progress, max),
+                    )
+                    "stop" -> {
+                        DownloadForegroundService.stop(this)
+                        result.success(null)
+                    }
+                    else -> result.notImplemented()
+                }
+            }
 
         // Downloads need to know how much room is left before queueing a task.
         storageChannel = MethodChannel(flutterEngine.dartExecutor.binaryMessenger, STORAGE_CHANNEL)
@@ -62,6 +100,8 @@ class MainActivity : FlutterActivity() {
         updaterChannel = null
         storageChannel?.setMethodCallHandler(null)
         storageChannel = null
+        downloadsChannel?.setMethodCallHandler(null)
+        downloadsChannel = null
         super.onDestroy()
     }
 
@@ -196,5 +236,6 @@ class MainActivity : FlutterActivity() {
     private companion object {
         const val CHANNEL = "bear_tv/updater"
         const val STORAGE_CHANNEL = "bear_tv/storage"
+        const val DOWNLOADS_CHANNEL = "bear_tv/downloads"
     }
 }

@@ -1,5 +1,13 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <uses-permission android:name="android.permission.INTERNET"/>
+    <!-- Keeps the download queue running while the app is in the background
+         (DownloadForegroundService). dataSync is the closest system type for
+         plain file transfers; Android 14 requires the matching permission. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC"/>
+    <!-- Android 13+ hides the service notification without it; the service
+         itself still runs. -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
     <!-- Needed to launch the system package installer for in-app updates. -->
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES"/>
     <!-- Android TV / leanback: the device declares no touchscreen. -->
@@ -35,6 +43,13 @@
                 <category android:name="android.intent.category.LEANBACK_LAUNCHER"/>
             </intent-filter>
         </activity>
+        <!-- Keeps the process (and the Dart download queue) alive in the
+             background. Stopped by Dart when the queue empties. -->
+        <service
+            android:name=".DownloadForegroundService"
+            android:exported="false"
+            android:stopWithTask="false"
+            android:foregroundServiceType="dataSync"/>
         <!-- Shares downloaded update APKs with the system installer. -->
         <provider
             android:name="androidx.core.content.FileProvider"

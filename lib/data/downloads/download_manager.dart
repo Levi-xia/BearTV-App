@@ -7,6 +7,7 @@ import '../history_store.dart';
 import '../models.dart';
 import '../vod/cms_models.dart';
 import 'download_engine.dart';
+import 'download_foreground.dart';
 import 'download_models.dart';
 import 'download_storage.dart';
 import 'downloads_store.dart';
@@ -26,11 +27,13 @@ class DownloadManager extends ChangeNotifier {
     DownloadEngine? engine,
     DateTime Function()? clock,
     Future<int?> Function()? freeSpaceProbe,
+    DownloadForeground? foreground,
   })  : _store = store ?? DownloadsStore(),
         storage = storage ?? DownloadStorage(),
         _engine = engine ?? HttpDownloadEngine(),
         _clock = clock ?? DateTime.now,
-        _freeSpaceProbe = freeSpaceProbe;
+        _freeSpaceProbe = freeSpaceProbe,
+        _foreground = foreground ?? defaultDownloadForeground();
 
   /// Concurrency choices offered on the downloads page.
   static const concurrencyOptions = [1, 3, 5, 10];
@@ -50,6 +53,10 @@ class DownloadManager extends ChangeNotifier {
   final DownloadEngine _engine;
   final DateTime Function() _clock;
 
+  /// Android foreground service that keeps the process alive while the queue
+  /// has work (see [DownloadForeground]).
+  final DownloadForeground _foreground;
+
   /// Overrides [DownloadStorage.freeBytes] in tests.
   final Future<int?> Function()? _freeSpaceProbe;
 
@@ -66,6 +73,21 @@ class DownloadManager extends ChangeNotifier {
   /// Ids paused automatically when the app went to the background; resumed when
   /// it comes back (if still paused).
   final Set<String> _autoPaused = {};
+
+  /// Whether the keep-alive service is up. False on platforms without one and
+  /// when the system refused to start it.
+  bool _foregroundOn = false;
+  bool _foregroundStarting = false;
+
+  /// Wall clock of the last notification push, so progress refreshes stay at
+  /// ~1 Hz even though the UI updates much faster.
+  int _foregroundPushedAt = 0;
+
+  /// Don't hammer the platform after it refused to start the service.
+  int _foregroundRetryAt = 0;
+  static const foregroundPushIntervalMs = 1000;
+  static const foregroundRetryIntervalMs = 30000;
+  static const _foregroundTitle = '熊熊TV · 后台下载';
 
   final Stopwatch _notifyWatch = Stopwatch()..start();
 
@@ -842,6 +864,36 @@ class DownloadManager extends ChangeNotifier {
 
   // --- Lifecycle ------------------------------------------------------------
 
+  /// Whether the Android foreground service is currently keeping the process
+  /// alive for the queue.
+  bool get backgroundKeepAlive => _foregroundOn;
+
+  /// The app left the foreground. With the keep-alive service up the transfers
+  /// simply continue; without one (non-Android, system refusal, old devices)
+  /// pause, because a background kill would truncate an in-flight segment.
+  void handleAppBackgrounded() {
+    if (_foregroundOn) return;
+    pauseActiveForLifecycle();
+  }
+
+  /// The app came back: resume whatever the previous backgrounding auto-paused
+  /// and make sure the service reflects the queue (it may have died while the
+  /// app was suspended).
+  void handleAppForegrounded() {
+    resumeAutoPaused();
+    // A service start refused in the background deserves a retry now that the
+    // app is visible again.
+    _foregroundRetryAt = 0;
+    _syncForeground(force: true);
+  }
+
+  /// The engine is going away (activity destroyed). Nothing can continue, so
+  /// stop the service instead of leaving its notification behind.
+  void handleAppDetached() {
+    pauseActiveForLifecycle();
+    _stopForeground();
+  }
+
   /// Called when the app goes to the background. No foreground service means an
   /// in-flight write can be killed, so pause (keeping partial files).
   void pauseActiveForLifecycle() {
@@ -867,8 +919,126 @@ class DownloadManager extends ChangeNotifier {
     }
   }
 
+  // --- Foreground service ---------------------------------------------------
+
+  /// Start, refresh or stop the keep-alive service so it matches the queue:
+  /// up while any task is queued/downloading, gone once everything finished,
+  /// paused or failed.
+  void _syncForeground({bool force = false}) {
+    if (_disposed || _foregroundStarting) return;
+    final busy = _tasks.values.any((t) =>
+        t.status == DownloadStatus.queued ||
+        t.status == DownloadStatus.downloading);
+    if (!busy) {
+      if (!_foregroundOn) return;
+      _foregroundOn = false;
+      _foregroundPushedAt = 0;
+      unawaited(_foreground.stop());
+      return;
+    }
+    final now = _nowMs;
+    if (_foregroundOn) {
+      if (!force && now - _foregroundPushedAt < foregroundPushIntervalMs) {
+        return;
+      }
+      _foregroundPushedAt = now;
+      unawaited(_refreshForeground());
+      return;
+    }
+    if (now < _foregroundRetryAt) return;
+    _foregroundStarting = true;
+    _foregroundPushedAt = now;
+    unawaited(_startForeground());
+  }
+
+  Future<void> _refreshForeground() async {
+    final progress = _foregroundProgress();
+    final updated = await _foreground.update(
+      title: _foregroundTitle,
+      text: _foregroundText(),
+      progress: progress,
+      max: progress == null ? null : 1000,
+    );
+    if (updated || _disposed || !_foregroundOn) return;
+    // The service went away under us (killed with the process). Treat the queue
+    // as unprotected again so backgrounding pauses instead.
+    _foregroundOn = false;
+    _foregroundPushedAt = 0;
+  }
+
+  Future<void> _startForeground() async {
+    final progress = _foregroundProgress();
+    var started = false;
+    try {
+      started = await _foreground.start(
+        title: _foregroundTitle,
+        text: _foregroundText(),
+        progress: progress,
+        max: progress == null ? null : 1000,
+      );
+    } catch (_) {
+      // A service we can't start just means "pause in the background" again.
+      started = false;
+    }
+    _foregroundStarting = false;
+    if (_disposed) {
+      if (started) unawaited(_foreground.stop());
+      return;
+    }
+    _foregroundOn = started;
+    if (started) {
+      // The queue may have emptied while the service was starting, and the
+      // first notification should carry the current progress.
+      _syncForeground(force: true);
+    } else {
+      _foregroundRetryAt = _nowMs + foregroundRetryIntervalMs;
+    }
+  }
+
+  void _stopForeground() {
+    if (!_foregroundOn && !_foregroundStarting) return;
+    _foregroundOn = false;
+    _foregroundPushedAt = 0;
+    unawaited(_foreground.stop());
+  }
+
+  /// "正在下载 2 集 · 队列中 1 集 · 3.1 MB/s" for the notification body.
+  String _foregroundText() {
+    var running = 0;
+    var queued = 0;
+    for (final t in _tasks.values) {
+      if (t.status == DownloadStatus.downloading) running++;
+      if (t.status == DownloadStatus.queued) queued++;
+    }
+    final speed = totalSpeed;
+    final parts = <String>[
+      if (running > 0) '正在下载 $running 集',
+      if (queued > 0) '队列中 $queued 集',
+      if (speed > 0) formatSpeed(speed),
+    ];
+    return parts.isEmpty ? '准备中' : parts.join(' · ');
+  }
+
+  /// Aggregate progress of the running tasks on a 0–1000 scale, or null while
+  /// the total size is still unknown (the notification then shows a spinner).
+  int? _foregroundProgress() {
+    var received = 0;
+    var total = 0;
+    for (final t in _tasks.values) {
+      if (t.status != DownloadStatus.downloading || t.totalBytes <= 0) continue;
+      received += t.receivedBytes;
+      total += t.totalBytes;
+    }
+    if (total <= 0) return null;
+    final value = received * 1000 ~/ total;
+    return value > 1000 ? 1000 : value;
+  }
+
   void _notify({bool force = false}) {
     if (_disposed) return;
+    // Keep the foreground service in step with the queue; it throttles its own
+    // notification updates, so the fast progress stream stays cheap.
+    _syncForeground(force: force);
     if (!force && _notifyWatch.elapsedMilliseconds < 200) return;
     _notifyWatch.reset();
     notifyListeners();
@@ -877,6 +1047,7 @@ class DownloadManager extends ChangeNotifier {
   @override
   void dispose() {
     _disposed = true;
+    _stopForeground();
     for (final token in _tokens.values) {
       token.cancel();
     }
