@@ -79,7 +79,13 @@ class _RecordingPlayer extends ChangeNotifier implements PlayerController {
     final fails = failPattern != null && target.contains(failPattern!);
     _set(fails
         ? const PlayerValue()
-        : const PlayerValue(ready: true, duration: Duration(minutes: 45)));
+        : PlayerValue(
+            ready: true,
+            // A partial playlist only contains the downloaded prefix.
+            duration: target.contains('partial.m3u8')
+                ? const Duration(minutes: 5)
+                : const Duration(minutes: 45),
+          ));
   }
 
   @override
@@ -564,6 +570,26 @@ void main() {
 
       expect(c.playingPartial, isFalse);
       expect(player.opened.last, 'https://cdn.test/1/ep1.m3u8');
+    });
+
+    test('the bar spans the whole episode and grows with the download',
+        () async {
+      await setUpController(cachedEpisodes: [1], progressive: true);
+      await c.openTitle(_item);
+      expect(c.playingPartial, isTrue);
+
+      // The player only knows the 5:00 prefix it opened; the bar shows the
+      // episode's real 45:00 so it doesn't end (and jump) at the prefix.
+      expect(player.value.duration, const Duration(minutes: 5));
+      expect(c.playbackDuration, const Duration(minutes: 45));
+      expect(c.playbackProgress, closeTo(120 / 2700, 1e-9));
+      expect(c.playbackBuffered, closeTo(300 / 2700, 1e-9));
+
+      // The download frontier extends the buffered (白条) layer.
+      progressiveEngine!.report(manager.activeTasks.single.id, 600000);
+      expect(c.playbackBuffered, closeTo(600 / 2700, 1e-9));
+      expect(c.playbackDuration, const Duration(minutes: 45));
+      expect(c.playbackProgress, closeTo(120 / 2700, 1e-9));
     });
   });
 }

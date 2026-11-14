@@ -495,6 +495,7 @@ class _ControlsBody extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final app = AppScope.of(context);
     return Container(
       padding: const EdgeInsets.fromLTRB(20, 40, 20, 16),
       decoration: const BoxDecoration(
@@ -522,13 +523,13 @@ class _ControlsBody extends StatelessWidget {
               ),
             ),
           _ProgressBar(
-              progress: value.progress, buffered: value.bufferedProgress),
+              progress: app.playbackProgress, buffered: app.playbackBuffered),
           const SizedBox(height: 8),
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
               Text(_fmt(value.position), style: _timeStyle),
-              Text(_fmt(value.duration), style: _timeStyle),
+              Text(_fmt(app.playbackDuration), style: _timeStyle),
             ],
           ),
         ],

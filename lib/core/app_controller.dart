@@ -262,6 +262,38 @@ class AppController extends ChangeNotifier {
   /// the prefix end — the switch would happen immediately.
   static const int _partialResumeMarginMs = 20 * 1000;
 
+  /// Total length for the play bar. While 边下边播 the player only knows the
+  /// downloaded prefix (its playlist ends with `#EXT-X-ENDLIST`), so the
+  /// episode's real length from the download task is used instead — otherwise
+  /// the bar would stop at the prefix and jump when the stream hands over.
+  Duration get playbackDuration {
+    final value = player.value;
+    if (!playingPartial) return value.duration;
+    final total = _partialTotalMs();
+    return total > 0 ? Duration(milliseconds: total) : value.duration;
+  }
+
+  /// Played fraction of [playbackDuration].
+  double get playbackProgress {
+    final total = playbackDuration.inMilliseconds;
+    if (total <= 0) return 0;
+    return (player.value.position.inMilliseconds / total).clamp(0.0, 1.0);
+  }
+
+  /// Buffered fraction for the 白条: the player's own buffer, extended to the
+  /// downloaded prefix while 边下边播 — so it visibly grows with the download
+  /// instead of sitting at whatever the player read when it opened the file.
+  double get playbackBuffered {
+    final total = playbackDuration.inMilliseconds;
+    if (total <= 0) return 0;
+    var bufferedMs = player.value.buffered.inMilliseconds;
+    if (playingPartial) {
+      final frontier = _partialFrontierMs();
+      if (frontier > bufferedMs) bufferedMs = frontier;
+    }
+    return (bufferedMs / total).clamp(0.0, 1.0);
+  }
+
   // per-title skip profile (mirrors BearTV skipProfiles)
   bool skipEnabled = false;
   int introSec = 0;
