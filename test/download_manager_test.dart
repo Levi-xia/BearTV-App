@@ -152,11 +152,12 @@ class FakeEngine implements DownloadEngine {
   }
 
   /// Simulates the engine reporting [bytes] transferred so far.
-  void emit(String id, int bytes) {
+  void emit(String id, int bytes, {int? networkBytes}) {
     _sinks[id]!(DownloadProgress(
       doneSegments: 1,
       totalSegments: 2,
       receivedBytes: bytes,
+      networkBytes: networkBytes,
       totalBytes: 1000,
     ));
   }
@@ -354,6 +355,56 @@ void main() {
 
     // No progress within the window: report 0 rather than a stale number.
     now += DownloadManager.speedStaleMs + 1000;
+    expect(manager.totalSpeed, 0);
+  });
+
+  test('millisecond chunk bursts accumulate for a full sampling window',
+      () async {
+    await manager.enqueue(_request());
+    await pumpEventQueue();
+    final id = engine.started.single.id;
+    now += 1;
+    engine.emit(id, 50 * 1024 * 1024, networkBytes: 512 * 1024);
+    expect(manager.totalSpeed, 0);
+    now += 499;
+    engine.emit(id, 51 * 1024 * 1024, networkBytes: 1024 * 1024);
+    expect(manager.totalSpeed, 0);
+    now += 500;
+    engine.emit(id, 52 * 1024 * 1024, networkBytes: 2 * 1024 * 1024);
+    expect(manager.totalSpeed, closeTo(2 * 1024 * 1024, 100));
+  });
+
+  test('resume excludes cached bytes and starts with a fresh speed window',
+      () async {
+    await manager.enqueue(_request());
+    await pumpEventQueue();
+    final id = engine.started.single.id;
+    now += 1000;
+    engine.emit(id, 100 * 1024 * 1024, networkBytes: 1024 * 1024);
+    expect(manager.totalSpeed, closeTo(1024 * 1024, 100));
+    await manager.pause(id);
+    await _settle();
+    expect(manager.totalSpeed, 0);
+    now += 5000;
+    await manager.resume(id);
+    await pumpEventQueue();
+    now += 1;
+    engine.emit(id, 100 * 1024 * 1024, networkBytes: 0);
+    expect(manager.totalSpeed, 0);
+    now += 1000;
+    engine.emit(id, 101 * 1024 * 1024, networkBytes: 1024 * 1024);
+    expect(manager.totalSpeed, closeTo(1024 * 1024, 2048));
+  });
+
+  test('disk scan callbacks do not keep stale speed alive', () async {
+    await manager.enqueue(_request());
+    await pumpEventQueue();
+    final id = engine.started.single.id;
+    now += 1000;
+    engine.emit(id, 1024, networkBytes: 1024);
+    expect(manager.totalSpeed, greaterThan(0));
+    now += DownloadManager.speedStaleMs + 1;
+    engine.emit(id, 200 * 1024 * 1024, networkBytes: 1024);
     expect(manager.totalSpeed, 0);
   });
 
@@ -591,7 +642,8 @@ void main() {
       final launch = manager.launchForGroup(manager.groups.single);
 
       expect(launch!.task!.episodeIndex, 0);
-      expect(launch.task!.playableMs, greaterThan(DownloadManager.minPartialMs));
+      expect(
+          launch.task!.playableMs, greaterThan(DownloadManager.minPartialMs));
     });
 
     test('a task with no prefix yet is still returned (online fallback)',

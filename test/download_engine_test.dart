@@ -163,7 +163,8 @@ s2.ts
     String? atFirstSegment;
     await run(engine, task, onProgress: (p) {
       progress.add(p);
-      atFirstSegment ??= partial.existsSync() ? partial.readAsStringSync() : null;
+      atFirstSegment ??=
+          partial.existsSync() ? partial.readAsStringSync() : null;
     });
 
     // After the first segment only that segment is exposed — the player can
@@ -313,11 +314,16 @@ v.m3u8
         HttpDownloadEngine(client: client, retryDelay: Duration.zero);
     final task = _task('https://cdn.test/a.m3u8');
 
-    await run(engine, task);
+    final firstProgress = <DownloadProgress>[];
+    await run(engine, task, onProgress: firstProgress.add);
     expect(segmentGets, 2);
+    expect(firstProgress.last.networkBytes, 6);
 
-    await run(engine, task);
+    final resumedProgress = <DownloadProgress>[];
+    await run(engine, task, onProgress: resumedProgress.add);
     expect(segmentGets, 2); // nothing re-downloaded
+    expect(resumedProgress.last.receivedBytes, 6);
+    expect(resumedProgress.every((p) => p.networkBytes == 0), isTrue);
   });
 
   test('a changed segment list drops the old fragments', () async {
@@ -391,7 +397,10 @@ v.m3u8
     final engine =
         HttpDownloadEngine(client: client, retryDelay: Duration.zero);
 
-    await run(engine, task);
+    final progress = <DownloadProgress>[];
+    await run(engine, task, onProgress: progress.add);
+    expect(progress.last.receivedBytes, 10);
+    expect(progress.last.networkBytes, 6);
 
     expect(File('${dir.path}/video.mp4').readAsBytesSync(),
         [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);

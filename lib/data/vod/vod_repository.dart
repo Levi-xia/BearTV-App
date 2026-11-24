@@ -293,8 +293,19 @@ class VodRepository {
 
   /// Bypass the short playback-start memo when updating an offline catalogue.
   Future<VodDetail?> latestDetail(CmsSite site, String vodId) {
-    _detailMemo.remove('${site.id}\u0000$vodId');
-    return _detailOf(site, vodId);
+    final key = '${site.id}\u0000$vodId';
+    _detailMemo.remove(key);
+    final future = _client.fetchLatestDetail(site, vodId);
+    // Share a successful fresh result with the delayed resource-option lookup.
+    // Failures are deliberately not memoized.
+    return future.then((detail) {
+      if (detail != null) {
+        _store(_detailMemo, key, _Pending(Future.value(detail)));
+      } else {
+        _detailMemo.remove(key);
+      }
+      return detail;
+    });
   }
 }
 

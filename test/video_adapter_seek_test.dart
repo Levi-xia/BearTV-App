@@ -12,6 +12,7 @@ class _Player extends VideoPlayerController {
   int active = 0;
   int maxActive = 0;
   double effectiveSpeed = 1;
+  bool immediateSeek = false;
 
   @override
   Future<void> initialize() async {
@@ -39,9 +40,11 @@ class _Player extends VideoPlayerController {
     targets.add(position);
     active++;
     if (active > maxActive) maxActive = active;
-    final gate = Completer<void>();
-    gates.add(gate);
-    await gate.future;
+    if (!immediateSeek) {
+      final gate = Completer<void>();
+      gates.add(gate);
+      await gate.future;
+    }
     effectiveSpeed = 1; // Simulate a seek resetting native playback rate.
     active--;
     value = value.copyWith(position: position);
@@ -54,6 +57,56 @@ class _Player extends VideoPlayerController {
 }
 
 void main() {
+  test('rapid remote repeats only commit the final target after input settles',
+      () async {
+    final backend = _Player()..immediateSeek = true;
+    final adapter = VideoAdapter(controllerFactory: (_) => backend);
+    addTearDown(adapter.dispose);
+    await adapter.open('https://example.test/video');
+    Future<void>? pending;
+    for (var i = 0; i < 30; i++) {
+      pending = adapter
+          .seekToDeferred(adapter.value.position + const Duration(seconds: 10));
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+    }
+    expect(adapter.value.position, const Duration(minutes: 6));
+    expect(adapter.value.seeking, isTrue);
+    expect(backend.targets, isEmpty);
+    await pending;
+    expect(backend.targets, [const Duration(minutes: 6)]);
+    expect(adapter.value.seeking, isFalse);
+    expect(backend.maxActive, 1);
+  });
+
+  test('reversing remote direction uses the preview and clamps the target',
+      () async {
+    final backend = _Player()..immediateSeek = true;
+    final adapter = VideoAdapter(controllerFactory: (_) => backend);
+    addTearDown(adapter.dispose);
+    await adapter.open('https://example.test/video');
+    unawaited(adapter.seekToDeferred(const Duration(hours: 2)));
+    expect(adapter.value.position, const Duration(hours: 1));
+    await adapter
+        .seekToDeferred(adapter.value.position - const Duration(seconds: 10));
+    expect(backend.targets, [const Duration(seconds: 3590)]);
+  });
+
+  test('opening another episode invalidates delayed remote seek', () async {
+    final first = _Player()..immediateSeek = true;
+    final second = _Player()..immediateSeek = true;
+    final adapter = VideoAdapter(
+        controllerFactory: (url) => url.endsWith('first') ? first : second);
+    addTearDown(adapter.dispose);
+    await adapter.open('https://example.test/first');
+    final pending = adapter.seekToDeferred(const Duration(minutes: 30));
+    await adapter.open('https://example.test/second');
+    await pending;
+    expect(first.targets, isEmpty);
+    expect(second.targets, isEmpty);
+    expect(adapter.value.position, const Duration(minutes: 1));
+    expect(adapter.value.seeking, isFalse);
+  });
+
   test('remembered rate is reapplied after play starts', () async {
     final backend = _Player();
     final adapter = VideoAdapter(controllerFactory: (_) => backend);

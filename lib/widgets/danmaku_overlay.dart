@@ -160,6 +160,7 @@ class _DanmakuOverlayState extends State<DanmakuOverlay>
 
   void _onPlayer() {
     final v = widget.player.value;
+    if (v.seeking) return;
     final newT = v.position.inMilliseconds / 1000.0;
     final nowMs = _wallMs();
     // What our smooth clock currently reads (before applying this update).

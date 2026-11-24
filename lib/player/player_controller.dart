@@ -12,6 +12,7 @@ class PlayerValue {
   final Duration buffered; // how far ahead the stream is cached
   final double speed;
   final bool completed;
+  final bool seeking;
   final String? error;
 
   const PlayerValue({
@@ -23,6 +24,7 @@ class PlayerValue {
     this.buffered = Duration.zero,
     this.speed = 1.0,
     this.completed = false,
+    this.seeking = false,
     this.error,
   });
 
@@ -44,6 +46,7 @@ class PlayerValue {
     Duration? buffered,
     double? speed,
     bool? completed,
+    bool? seeking,
     String? error,
   }) =>
       PlayerValue(
@@ -55,6 +58,7 @@ class PlayerValue {
         buffered: buffered ?? this.buffered,
         speed: speed ?? this.speed,
         completed: completed ?? this.completed,
+        seeking: seeking ?? this.seeking,
         error: error ?? this.error,
       );
 }
@@ -69,6 +73,11 @@ abstract class PlayerController extends ValueListenable<PlayerValue> {
   Future<void> seekTo(Duration position);
   Future<void> setSpeed(double speed);
   void dispose();
+}
+
+/// Remote key repeats preview immediately, but commit after input settles.
+abstract interface class DeferredSeekPlayer {
+  Future<void> seekToDeferred(Duration position);
 }
 
 /// Fake player: advances position on a 1s timer, matching the HTML demo

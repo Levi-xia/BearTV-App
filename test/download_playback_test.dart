@@ -17,6 +17,7 @@ import 'package:bear_tv/data/kv_store.dart';
 import 'package:bear_tv/data/models.dart';
 import 'package:bear_tv/data/settings_store.dart';
 import 'package:bear_tv/data/vod/cms_models.dart';
+import 'package:bear_tv/data/vod/cms_client.dart';
 import 'package:bear_tv/data/vod/vod_repository.dart';
 import 'package:bear_tv/player/player_controller.dart';
 
@@ -43,10 +44,13 @@ class _FakeVod extends VodRepository {
 
 class _UpdatingVod extends _FakeVod {
   final response = Completer<VodDetail?>();
+  int refreshes = 0;
 
   @override
-  Future<VodDetail?> latestDetail(CmsSite site, String vodId) =>
-      response.future;
+  Future<VodDetail?> latestDetail(CmsSite site, String vodId) {
+    refreshes++;
+    return response.future;
+  }
 }
 
 /// A repository that only knows a *different* source. 去播放 must never reach
@@ -112,6 +116,7 @@ class _OfflineVod extends VodRepository {
 class _RecordingPlayer extends ChangeNotifier implements PlayerController {
   final List<String> opened = [];
   String? failPattern;
+  Completer<void>? openGate;
   PlayerValue _value = const PlayerValue();
 
   @override
@@ -126,6 +131,7 @@ class _RecordingPlayer extends ChangeNotifier implements PlayerController {
   Future<void> open(String? url, {Map<String, String>? headers}) async {
     final target = url ?? '';
     opened.add(target);
+    await openGate?.future;
     final fails = failPattern != null && target.contains(failPattern!);
     _set(fails
         ? const PlayerValue()
@@ -418,6 +424,15 @@ void main() {
     expect(c.fullscreen, isTrue);
     expect(manager.snapshotFor('src1', 'vod1')!.playLines.first.episodes.length,
         4);
+    // A stale resource option must not restore the pre-refresh catalogue.
+    await c.switchResource(ResourceOption(
+      sourceId: _detail.sourceId,
+      sourceName: _detail.sourceName,
+      vodId: _detail.vodId,
+      title: _detail.title,
+      detail: _detail,
+    ));
+    expect(c.currentEpisodes.length, 4);
   });
 
   test('a cached recorded episode plays from the local file', () async {
@@ -432,6 +447,82 @@ void main() {
     expect(player.opened.last, endsWith('index.m3u8'));
     // Progress was restored from history.
     expect(c.history.entryFor(_item.key)!.positionMs, 120000);
+  });
+
+  test('seek preview near ending does not auto-advance the episode', () async {
+    await setUpController(cachedEpisodes: [1]);
+    await c.openTitle(_item);
+    c.skipEnabled = true;
+    c.endingSec = 90;
+    final opened = [...player.opened];
+    player._set(player.value.copyWith(
+      position: const Duration(minutes: 44, seconds: 50),
+      seeking: true,
+    ));
+    expect(c.episodeIndex, 1);
+    expect(player.opened, opened);
+    expect(c.history.entryFor(_item.key)!.positionMs, 120000);
+  });
+
+  test('catalogue refresh starts even while the video open is pending',
+      () async {
+    final vod = _UpdatingVod();
+    await setUpController(cachedEpisodes: [1], vod: vod);
+    final gate = player.openGate = Completer<void>();
+    final opening = c.openTitle(_item);
+    expect(vod.refreshes, 1);
+    vod.response.complete(_detail);
+    await waitUntil(() => c.toast.value != null);
+    expect(c.toast.value!.text, contains('剧集已同步'));
+    gate.complete();
+    await opening;
+    expect(player.value.playing, isTrue);
+  });
+
+  test('missing source explains why cached catalogue cannot update', () async {
+    final vod = _UpdatingVod();
+    await setUpController(cachedEpisodes: [1], vod: vod);
+    await c.settings.setCmsSites([]);
+    await c.openTitle(_item);
+    expect(vod.refreshes, 0);
+    expect(c.toast.value!.text, contains('未配置'));
+    expect(player.value.playing, isTrue);
+  });
+
+  test('missing original resource reports failure and preserves playback',
+      () async {
+    final vod = _UpdatingVod();
+    await setUpController(cachedEpisodes: [1], vod: vod);
+    await c.openTitle(_item);
+    final opened = [...player.opened];
+    vod.response.complete(null);
+    await waitUntil(() => c.toast.value != null);
+    expect(c.toast.value!.text, contains('未找到原资源'));
+    expect(c.currentDetail!.toJson(), _detail.toJson());
+    expect(player.opened, opened);
+    expect(player.value.playing, isTrue);
+  });
+
+  test('network diagnostic reaches toast without interrupting cached playback',
+      () async {
+    final vod = _UpdatingVod();
+    await setUpController(cachedEpisodes: [1], vod: vod);
+    await c.openTitle(_item);
+    vod.response.completeError(const CatalogueException('连接播放源超时'));
+    await waitUntil(() => c.toast.value != null);
+    expect(c.toast.value!.text, contains('连接播放源超时'));
+    expect(player.value.playing, isTrue);
+  });
+
+  test('late catalogue results do not show toast after leaving player',
+      () async {
+    final vod = _UpdatingVod();
+    await setUpController(cachedEpisodes: [1], vod: vod);
+    await c.openTitle(_item);
+    c.page = AppPage.home;
+    vod.response.complete(null);
+    await Future<void>.delayed(Duration.zero);
+    expect(c.toast.value, isNull);
   });
 
   test('the cached episode is actually served over the loopback transport',

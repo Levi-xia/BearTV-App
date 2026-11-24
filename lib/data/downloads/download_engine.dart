@@ -34,6 +34,10 @@ class DownloadProgress {
   final int receivedBytes;
   final int totalBytes;
 
+  /// Media bytes fetched in this engine run, excluding files already on disk.
+  /// Independent of receivedBytes, which includes resumed/cached content.
+  final int? networkBytes;
+
   /// HLS only: duration of the downloaded prefix that the partial playlist
   /// currently exposes, i.e. how much of the episode is playable from disk.
   /// Always matches the `partial.m3u8` on disk, so the playhead can never run
@@ -48,6 +52,7 @@ class DownloadProgress {
     this.totalSegments = 0,
     this.receivedBytes = 0,
     this.totalBytes = 0,
+    this.networkBytes,
     this.playableMs = 0,
     this.totalMs = 0,
   });
@@ -299,6 +304,7 @@ class HttpDownloadEngine implements DownloadEngine {
     ];
     var done = 0;
     var bytes = 0;
+    var networkBytes = 0;
     var prefixMs = 0;
     var writtenMs = 0;
     var wrotePartial = false;
@@ -328,6 +334,7 @@ class HttpDownloadEngine implements DownloadEngine {
         await _writeAtomic(file, data);
         done++;
         bytes += data.length;
+        networkBytes += data.length;
       }
       prefixMs += (seg.duration * 1000).round();
       // Refresh the playable prefix playlist at most every few seconds: the
@@ -354,6 +361,7 @@ class HttpDownloadEngine implements DownloadEngine {
         doneSegments: done,
         totalSegments: playlist.segments.length,
         receivedBytes: bytes,
+        networkBytes: networkBytes,
         playableMs: writtenMs,
         totalMs: playlist.durationMs,
       ));
@@ -454,6 +462,7 @@ class HttpDownloadEngine implements DownloadEngine {
     final name = 'video${_extFor(uri.toString(), fallback: '.mp4')}';
     final target = File(_join(dir.path, name));
     final part = File(_join(dir.path, 'video.part'));
+    var networkBytes = 0;
 
     for (var attempt = 0;; attempt++) {
       cancel.throwIfCancelled();
@@ -498,8 +507,10 @@ class HttpDownloadEngine implements DownloadEngine {
             cancel.throwIfCancelled();
             sink.add(chunk);
             received += chunk.length;
+            networkBytes += chunk.length;
             onProgress(DownloadProgress(
               receivedBytes: received,
+              networkBytes: networkBytes,
               totalBytes: total ?? 0,
             ));
           }

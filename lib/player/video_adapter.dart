@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'dart:async';
 
 import 'package:flutter/foundation.dart';
 import 'package:video_player/video_player.dart';
@@ -14,7 +15,8 @@ import 'player_controller.dart';
 ///
 /// [raw] exposes the current controller so the play screen can mount a
 /// [VideoPlayer] texture; it is null until [open] initialises successfully.
-class VideoAdapter extends ChangeNotifier implements PlayerController {
+class VideoAdapter extends ChangeNotifier
+    implements PlayerController, DeferredSeekPlayer {
   VideoAdapter({VideoPlayerController Function(String)? controllerFactory})
       : _controllerFactory = controllerFactory;
 
@@ -30,6 +32,8 @@ class VideoAdapter extends ChangeNotifier implements PlayerController {
   Duration? _seekTarget;
   Future<void>? _seekWorker;
   int _seekGeneration = 0;
+  DateTime? _seekAfter;
+  static const _remoteSeekDelay = Duration(milliseconds: 350);
 
   VideoPlayerController? get raw => _vp;
 
@@ -112,7 +116,8 @@ class VideoAdapter extends ChangeNotifier implements PlayerController {
       duration: v.duration,
       buffered: _bufferedEnd(v),
       speed: _speed,
-      completed: v.isCompleted,
+      completed: _seekTarget == null && v.isCompleted,
+      seeking: _seekTarget != null,
       error: error,
     );
     notifyListeners();
@@ -152,18 +157,26 @@ class VideoAdapter extends ChangeNotifier implements PlayerController {
   Future<void> togglePlay() => _value.playing ? pause() : play();
 
   @override
-  Future<void> seekTo(Duration position) {
+  Future<void> seekTo(Duration position) => _queueSeek(position, Duration.zero);
+
+  @override
+  Future<void> seekToDeferred(Duration position) =>
+      _queueSeek(position, _remoteSeekDelay);
+
+  Future<void> _queueSeek(Duration position, Duration settleDelay) {
     final vp = _vp;
     if (vp == null) return Future<void>.value();
     var target = position < Duration.zero ? Duration.zero : position;
     if (vp.value.duration > Duration.zero && target > vp.value.duration) {
       target = vp.value.duration;
     }
+    if (_seekTarget == target) return _seekWorker ?? Future<void>.value();
     _pendingSeek = target;
     _seekTarget = target;
+    _seekAfter = DateTime.now().add(settleDelay);
     // Publish the requested position immediately: relative key repeats must
     // accumulate from this target, not from the decoder's stale position.
-    _value = _value.copyWith(position: target, completed: false);
+    _value = _value.copyWith(position: target, completed: false, seeking: true);
     notifyListeners();
     return _seekWorker ??= _drainSeeks(vp, _seekGeneration);
   }
@@ -173,15 +186,22 @@ class VideoAdapter extends ChangeNotifier implements PlayerController {
     await Future<void>.value();
     try {
       while (generation == _seekGeneration && identical(vp, _vp)) {
+        final delay = _seekAfter?.difference(DateTime.now()) ?? Duration.zero;
+        if (delay > Duration.zero) {
+          await Future<void>.delayed(delay);
+          continue; // A key repeat may have extended the quiet period.
+        }
         final target = _pendingSeek;
         if (target == null) break;
         _pendingSeek = null;
+        debugPrint('[video] seek submit targetMs=${target.inMilliseconds}');
         await vp.seekTo(target);
       }
     } finally {
       if (generation == _seekGeneration) {
         _pendingSeek = null;
         _seekTarget = null;
+        _seekAfter = null;
         _seekWorker = null;
         _sync();
       }
@@ -203,6 +223,7 @@ class VideoAdapter extends ChangeNotifier implements PlayerController {
     _seekGeneration++;
     _pendingSeek = null;
     _seekTarget = null;
+    _seekAfter = null;
     _seekWorker = null;
     final vp = _vp;
     _vp = null;

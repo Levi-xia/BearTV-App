@@ -5,6 +5,12 @@ import 'package:http/http.dart' as http;
 
 import 'cms_models.dart';
 
+/// User-facing reason for a background catalogue refresh failure.
+class CatalogueException implements Exception {
+  const CatalogueException(this.message);
+  final String message;
+}
+
 /// MacCMS apiv3 JSON client, ported from BearTV `src/services/cmsClient.js`.
 ///
 /// Protocol:
@@ -35,15 +41,31 @@ class CmsClient {
       RegExp(r'\$(https?://[^"' "'" r'\s]+?/\d{8}/\d+_[a-f0-9]+/index\.m3u8)');
   static final RegExp _h1 = RegExp(r'<h1[^>]*>([^<]+)</h1>');
 
-  Future<Map<String, dynamic>?> _getJson(Uri uri) async {
+  Future<Map<String, dynamic>?> _getJson(Uri uri,
+      {bool reportErrors = false}) async {
     try {
       final res = await _client.get(uri, headers: const {
         'Accept': 'application/json',
       }).timeout(_timeout);
-      if (res.statusCode < 200 || res.statusCode >= 300) return null;
+      if (res.statusCode < 200 || res.statusCode >= 300) {
+        throw CatalogueException('播放源响应异常（HTTP ${res.statusCode}）');
+      }
       final decoded = jsonDecode(utf8.decode(res.bodyBytes));
-      return decoded is Map<String, dynamic> ? decoded : null;
+      if (decoded is! Map<String, dynamic>) {
+        throw const CatalogueException('播放源返回的数据格式异常');
+      }
+      return decoded;
+    } on TimeoutException {
+      if (reportErrors) throw const CatalogueException('连接播放源超时');
+      return null;
+    } on FormatException {
+      if (reportErrors) throw const CatalogueException('播放源返回的数据格式异常');
+      return null;
+    } on CatalogueException {
+      if (reportErrors) rethrow;
+      return null;
     } catch (_) {
+      if (reportErrors) throw const CatalogueException('无法连接播放源，请检查网络');
       // Silent degrade: one dead source must not break the aggregate search.
       return null;
     }
@@ -86,28 +108,57 @@ class CmsClient {
     return _fetchStandardDetail(site, vodId);
   }
 
-  Future<VodDetail?> _fetchStandardDetail(CmsSite site, String vodId) async {
+  /// Unlike aggregate search, background refresh must explain failures.
+  Future<VodDetail?> fetchLatestDetail(CmsSite site, String vodId) async {
+    if (!RegExp(r'^[\w-]+$').hasMatch(vodId)) {
+      throw const CatalogueException('缓存记录中的资源编号无效');
+    }
+    if (site.detail != null && site.detail!.isNotEmpty) {
+      return _fetchScrapedDetail(site, vodId, reportErrors: true);
+    }
+    return _fetchStandardDetail(site, vodId, reportErrors: true);
+  }
+
+  Future<VodDetail?> _fetchStandardDetail(CmsSite site, String vodId,
+      {bool reportErrors = false}) async {
     final base = site.api;
     final sep = base.contains('?') ? '&' : '?';
     final uri = Uri.parse('$base${sep}ac=videolist&ids=$vodId');
-    final data = await _getJson(uri);
+    final data = await _getJson(uri, reportErrors: reportErrors);
     final list = data?['list'];
-    if (list is! List || list.isEmpty) return null;
+    if (list is! List) {
+      if (reportErrors) throw const CatalogueException('播放源返回的数据格式异常');
+      return null;
+    }
+    if (list.isEmpty) return null;
     final info = list.first;
-    if (info is! Map) return null;
+    if (info is! Map) {
+      if (reportErrors) throw const CatalogueException('播放源返回的数据格式异常');
+      return null;
+    }
     return mapDetail(Map<String, dynamic>.from(info),
         sourceId: site.id, sourceName: site.name);
   }
 
   /// Special sources: scrape the HTML detail page for m3u8 links.
-  Future<VodDetail?> _fetchScrapedDetail(CmsSite site, String vodId) async {
+  Future<VodDetail?> _fetchScrapedDetail(CmsSite site, String vodId,
+      {bool reportErrors = false}) async {
     final uri = Uri.parse('${site.detail}/index.php/vod/detail/id/$vodId.html');
     String html;
     try {
       final res = await _client.get(uri).timeout(_timeout);
-      if (res.statusCode < 200 || res.statusCode >= 300) return null;
+      if (res.statusCode < 200 || res.statusCode >= 300) {
+        throw CatalogueException('播放源响应异常（HTTP ${res.statusCode}）');
+      }
       html = utf8.decode(res.bodyBytes);
+    } on TimeoutException {
+      if (reportErrors) throw const CatalogueException('连接播放源超时');
+      return null;
+    } on CatalogueException {
+      if (reportErrors) rethrow;
+      return null;
     } catch (_) {
+      if (reportErrors) throw const CatalogueException('无法连接播放源，请检查网络');
       return null;
     }
 

@@ -149,30 +149,32 @@ class DownloadManager extends ChangeNotifier {
     return sum.round();
   }
 
-  /// Fold a progress event into the task's speed. HLS reports once per
-  /// segment, so the instantaneous rate is exponentially smoothed: the number
-  /// stays visible between segments instead of flickering to zero.
+  /// Accumulate real transfer bytes for at least a second before sampling.
+  /// Chunk callbacks and local HLS scans can arrive milliseconds apart.
   void _recordSpeed(String id, int receivedBytes) {
     final now = _nowMs;
     final state = _speeds[id];
-    if (state == null) {
+    if (state == null || now < state.at || receivedBytes < state.latestBytes) {
       _speeds[id] = _Speed(at: now, bytes: receivedBytes, bps: 0);
       return;
     }
+    if (receivedBytes == state.latestBytes) return;
+    state.latestBytes = receivedBytes;
+    state.lastProgressAt = now;
     final elapsed = now - state.at;
     final gained = receivedBytes - state.bytes;
-    if (elapsed > 0) {
+    if (elapsed >= 1000) {
       final instant = gained > 0 ? gained * 1000 / elapsed : 0.0;
       state.bps = state.bps <= 0 ? instant : state.bps * 0.6 + instant * 0.4;
+      state.at = now;
+      state.bytes = receivedBytes;
     }
-    state.at = now;
-    state.bytes = receivedBytes;
   }
 
   double _speedFor(String id, int now) {
     final state = _speeds[id];
     if (state == null) return 0;
-    if (now - state.at > speedStaleMs) return 0;
+    if (now < state.at || now - state.lastProgressAt > speedStaleMs) return 0;
     return state.bps;
   }
 
@@ -398,16 +400,15 @@ class DownloadManager extends ChangeNotifier {
     );
     _tasks[task.id] = current;
     await _store.saveTask(current);
-    // Baseline for the speed read-out, so the first progress event measures a
-    // real delta instead of looking like a burst from zero.
-    _speeds[task.id] = _Speed(at: _nowMs, bytes: current.receivedBytes, bps: 0);
+    // Network counters restart at zero for each run; disk progress does not.
+    _speeds[task.id] = _Speed(at: _nowMs, bytes: 0, bps: 0);
     _notify(force: true);
 
     final persistWatch = Stopwatch()..start();
     void onProgress(DownloadProgress p) {
       final t = _tasks[task.id];
       if (t == null || t.status != DownloadStatus.downloading) return;
-      _recordSpeed(task.id, p.receivedBytes);
+      _recordSpeed(task.id, p.networkBytes ?? p.receivedBytes);
       final next = t.copyWith(
         doneSegments: p.doneSegments,
         totalSegments: p.totalSegments,
@@ -1146,13 +1147,17 @@ class DownloadManager extends ChangeNotifier {
 
 /// Rolling speed reading for one in-flight task.
 class _Speed {
-  _Speed({required this.at, required this.bytes, required this.bps});
+  _Speed({required this.at, required this.bytes, required this.bps})
+      : latestBytes = bytes,
+        lastProgressAt = at;
 
-  /// [DownloadManager._nowMs] of the last progress event.
+  /// [DownloadManager._nowMs] at the start of the current sampling window.
   int at;
 
   /// Bytes received as of [at].
   int bytes;
+  int latestBytes;
+  int lastProgressAt;
 
   /// Smoothed bytes per second.
   double bps;

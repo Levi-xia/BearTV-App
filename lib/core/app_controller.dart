@@ -19,6 +19,7 @@ import '../data/repository.dart';
 import '../data/settings_store.dart';
 import '../data/tmdb/tmdb_repository.dart';
 import '../data/vod/cms_models.dart';
+import '../data/vod/cms_client.dart' show CatalogueException;
 import '../data/vod/vod_repository.dart';
 import '../player/player_controller.dart';
 import 'config.dart';
@@ -1041,26 +1042,40 @@ class AppController extends ChangeNotifier {
     }
     notifyListeners();
 
-    await _playCurrent(resumeMs: resumeMs);
-    if (playToken != _playToken) return;
+    final playback = _playCurrent(resumeMs: resumeMs);
     unawaited(_updateDownloadedCatalogue(playToken));
+    await playback;
+    if (playToken != _playToken) return;
     _scheduleResourceOptions();
   }
 
-  /// Playback has already opened from disk. Only replace catalogue metadata;
+  /// Playback starts independently from disk. Only replace catalogue metadata;
   /// never open/seek/pause the player as part of this background operation.
   Future<void> _updateDownloadedCatalogue(int token) async {
     final original = currentDetail;
     if (original == null) return;
     final site = _siteById(original.sourceId);
-    if (site == null) return;
+    bool isCurrent() =>
+        token == _playToken &&
+        page == AppPage.play &&
+        identical(currentDetail, original);
+    void failure(String reason) {
+      if (isCurrent()) showToast('剧集同步失败：$reason；仍可播放已有缓存');
+    }
+
+    if (site == null) {
+      failure('原播放源「${original.sourceName}」未配置');
+      return;
+    }
     try {
       final fresh = await vodRepo.latestDetail(site, original.vodId);
-      if (token != _playToken ||
-          !identical(currentDetail, original) ||
-          fresh == null ||
-          fresh.key != original.key ||
-          fresh.firstEpisode == null) {
+      if (!isCurrent()) return;
+      if (fresh == null) {
+        failure('「${site.name}」未找到原资源，可能已下架或编号变更');
+        return;
+      }
+      if (fresh.key != original.key || fresh.firstEpisode == null) {
+        failure('「${site.name}」返回的资源不匹配或没有可播放剧集');
         return;
       }
 
@@ -1115,10 +1130,20 @@ class AppController extends ChangeNotifier {
       currentDetail = updated;
       lineIndex = selectedLine;
       episodeIndex = selectedEpisode;
+      resourceOptions = _withCurrentCatalogue(resourceOptions);
       notifyListeners();
-      await downloads.updateSnapshot(updated);
+      showToast('「${site.name}」剧集已同步，当前线路共 ${currentEpisodes.length} 集');
+      try {
+        await downloads.updateSnapshot(updated);
+      } catch (_) {
+        if (token == _playToken && page == AppPage.play) {
+          showToast('剧集已同步，但保存失败，下次进入将重新同步');
+        }
+      }
+    } on CatalogueException catch (e) {
+      failure('「${site.name}」${e.message}');
     } catch (_) {
-      // Offline/unavailable source: keep both playback and the old snapshot.
+      failure('「${site.name}」同步异常，请稍后重试');
     }
   }
 
@@ -1574,6 +1599,26 @@ class AppController extends ChangeNotifier {
   Timer? _resourceOptionsTimer;
   int _resourceOptionsToken = 0;
 
+  List<ResourceOption> _withCurrentCatalogue(List<ResourceOption> options) {
+    final detail = currentDetail;
+    return [
+      for (final option in options)
+        if (detail != null && option.key == detail.key)
+          ResourceOption(
+            sourceId: detail.sourceId,
+            sourceName: detail.sourceName,
+            vodId: detail.vodId,
+            title: detail.title,
+            episodeCount: detail.episodeCount,
+            available: detail.firstEpisode != null,
+            detail: detail,
+            isCurrent: true,
+          )
+        else
+          option,
+    ];
+  }
+
   /// Load the cross-source "switch resource" candidates for the current title.
   Future<void> _loadResourceOptions() async {
     final item = currentItem;
@@ -1587,7 +1632,7 @@ class AppController extends ChangeNotifier {
       current: currentDetail,
     );
     if (token != _playToken) return;
-    resourceOptions = opts;
+    resourceOptions = _withCurrentCatalogue(opts);
     loadingResources = false;
     notifyListeners();
   }
@@ -1636,7 +1681,8 @@ class AppController extends ChangeNotifier {
   Future<void> switchResource(ResourceOption option) async {
     final token = ++_playToken;
     final resumeMs = player.value.position.inMilliseconds;
-    var detail = option.detail;
+    var detail =
+        option.key == currentDetail?.key ? currentDetail : option.detail;
     if (detail == null) {
       final site = _siteById(option.sourceId);
       if (site != null) detail = await vodRepo.detail(site, option.vodId);
@@ -1715,7 +1761,12 @@ class AppController extends ChangeNotifier {
       await _leavePartialToOnline(seekToMs: target.inMilliseconds);
       return;
     }
-    await player.seekTo(target);
+    final backend = player;
+    if (backend is DeferredSeekPlayer) {
+      await (backend as DeferredSeekPlayer).seekToDeferred(target);
+    } else {
+      await backend.seekTo(target);
+    }
   }
 
   /// Player listener: auto-skip intro/outro + throttled progress persistence.
@@ -1723,7 +1774,7 @@ class AppController extends ChangeNotifier {
     if (page != AppPage.play || currentItem == null || currentDetail == null)
       return;
     final v = player.value;
-    if (!v.ready) return;
+    if (!v.ready || v.seeking) return;
     final pos = v.position;
     final dur = v.duration;
 
