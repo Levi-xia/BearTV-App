@@ -83,6 +83,29 @@ class AppController extends ChangeNotifier {
 
   int _nowMs() => _clock().millisecondsSinceEpoch;
 
+  Map<String, String>? _playbackHeaders(String? url, CmsSite? site) {
+    if (url == null || url.isEmpty) return site?.headers;
+    final uri = Uri.tryParse(url);
+    if (uri == null || (uri.scheme != 'http' && uri.scheme != 'https')) {
+      return site?.headers;
+    }
+    final headers = <String, String>{
+      'User-Agent': 'Mozilla/5.0 (Linux; Android 9; K) AppleWebKit/537.36 '
+          '(KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36',
+      'Accept': '*/*',
+      'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
+      'Referer':
+          '${uri.scheme}://${uri.host}${uri.hasPort ? ':${uri.port}' : ''}/',
+    };
+    for (final entry
+        in site?.headers.entries ?? const <MapEntry<String, String>>[]) {
+      headers.removeWhere(
+          (key, _) => key.toLowerCase() == entry.key.toLowerCase());
+      headers[entry.key] = entry.value;
+    }
+    return headers;
+  }
+
   /// Test seam: a repository passed in directly bypasses the settings/key flow.
   final ContentRepository? _injectedRepo;
   ContentRepository? _builtRepo;
@@ -1341,7 +1364,7 @@ class AppController extends ChangeNotifier {
     try {
       if (locals.isEmpty && !playingPartial) {
         await player.open(ep?.url,
-            headers: _siteById(d?.sourceId ?? '')?.headers);
+            headers: _playbackHeaders(ep?.url, _siteById(d?.sourceId ?? '')));
         if (!current()) return;
       } else {
         // Loopback HTTP first, then `file://`. Only when every transport fails
@@ -1368,7 +1391,8 @@ class AppController extends ChangeNotifier {
             showToast(wasCompleted ? '缓存播放失败，已切换在线播放' : '缓存片段播放失败，已切换在线播放');
             notifyListeners();
             await player.open(online,
-                headers: _siteById(d?.sourceId ?? '')?.headers);
+                headers:
+                    _playbackHeaders(online, _siteById(d?.sourceId ?? '')));
             if (!current()) return;
           }
         } else if (!wasCompleted && !_partialHintShown) {

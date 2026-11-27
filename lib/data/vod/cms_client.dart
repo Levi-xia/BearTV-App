@@ -57,12 +57,15 @@ class CmsClient {
   /// CMS providers commonly protect their API/detail endpoints with a
   /// browser-like UA. Keep this limited to catalogue requests; playback
   /// requests are passed to libmdk unchanged except for explicit site headers.
-  Map<String, String> _requestHeaders(Map<String, String>? overrides,
+  Map<String, String> _requestHeaders(Uri uri, Map<String, String>? overrides,
       {required String accept}) {
     final result = <String, String>{
       'User-Agent': 'Mozilla/5.0 (Linux; Android 9; K) AppleWebKit/537.36 '
           '(KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36',
       'Accept': accept,
+      'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
+      'Referer':
+          '${uri.scheme}://${uri.host}${uri.hasPort ? ':${uri.port}' : ''}/',
     };
     for (final entry in (overrides ?? const <String, String>{}).entries) {
       result.removeWhere(
@@ -84,8 +87,10 @@ class CmsClient {
     final request =
         http.AbortableRequest('GET', uri, abortTrigger: abort.future);
     if (headers != null) request.headers.addAll(headers);
-    return _client.send(request).then(http.Response.fromStream).timeout(
-        _timeout, onTimeout: () {
+    return _client
+        .send(request)
+        .then(http.Response.fromStream)
+        .timeout(_timeout, onTimeout: () {
       if (!abort.isCompleted) abort.complete();
       throw TimeoutException('CMS request');
     });
@@ -103,7 +108,7 @@ class CmsClient {
         reportErrors || CmsRequestScope.current?.reportErrors == true;
     try {
       final res = await _get(uri,
-          headers: _requestHeaders(headers, accept: 'application/json'));
+          headers: _requestHeaders(uri, headers, accept: 'application/json'));
       if (res.statusCode < 200 || res.statusCode >= 300) {
         throw CatalogueException('播放源响应异常（HTTP ${res.statusCode}）');
       }
@@ -207,7 +212,7 @@ class CmsClient {
     String html;
     try {
       final res = await _get(uri,
-          headers: _requestHeaders(site.headers,
+          headers: _requestHeaders(uri, site.headers,
               accept: 'text/html,application/xhtml+xml,*/*'));
       if (res.statusCode < 200 || res.statusCode >= 300) {
         throw CatalogueException('播放源响应异常（HTTP ${res.statusCode}）');
