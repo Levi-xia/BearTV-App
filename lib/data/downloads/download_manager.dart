@@ -113,7 +113,8 @@ class DownloadManager extends ChangeNotifier {
 
   int get _nowMs => _clock().millisecondsSinceEpoch;
 
-  bool get available => _initialized && _available;
+  bool get available => _initialized && _available && _store.available;
+  String? get storageError => _store.error;
 
   /// Tasks allowed to download simultaneously (1 / 3 / 5 / 10).
   int get concurrency => _concurrency;
@@ -302,11 +303,20 @@ class DownloadManager extends ChangeNotifier {
       // old build, corrupt write) must not masquerade as a cache hit.
       if (task.status == DownloadStatus.completed &&
           !storage.isComplete(task)) {
-        await _store.deleteTask(task.id);
-        continue;
+        task = task.copyWith(
+          status: DownloadStatus.failed,
+          error: '缓存入口文件缺失或无法读取，已保留视频文件，可重试下载修复',
+          updatedAt: _nowMs,
+        );
       }
       _tasks[task.id] = task;
-      if (!identical(task, stored)) await _store.saveTask(task);
+      if (_store.available && !identical(task, stored)) {
+        try {
+          await _store.saveTask(task);
+        } catch (_) {
+          // Keep readable tasks visible even when storage has become read-only.
+        }
+      }
     }
     _initialized = true;
     _notify(force: true);
@@ -377,7 +387,7 @@ class DownloadManager extends ChangeNotifier {
   }
 
   void _pump() {
-    if (_disposed || !_available) return;
+    if (_disposed || !available) return;
     while (_running < _concurrency) {
       DownloadTask? next;
       for (final task in _tasks.values) {
@@ -386,7 +396,10 @@ class DownloadManager extends ChangeNotifier {
       }
       if (next == null) return;
       _running++;
-      unawaited(_run(next));
+      unawaited(_run(next).catchError((Object error, StackTrace stack) {
+        debugPrint('[downloads] task failed: $error\n$stack');
+        _stopForPersistenceError();
+      }));
     }
   }
 
@@ -399,7 +412,6 @@ class DownloadManager extends ChangeNotifier {
       updatedAt: _nowMs,
     );
     _tasks[task.id] = current;
-    await _store.saveTask(current);
     // Network counters restart at zero for each run; disk progress does not.
     _speeds[task.id] = _Speed(at: _nowMs, bytes: 0, bps: 0);
     _notify(force: true);
@@ -421,12 +433,15 @@ class DownloadManager extends ChangeNotifier {
       _tasks[task.id] = next;
       if (persistWatch.elapsedMilliseconds > 2000) {
         persistWatch.reset();
-        unawaited(_store.saveTask(next));
+        unawaited(_store.saveTask(next).catchError((Object error) {
+          _stopForPersistenceError();
+        }));
       }
       _notify();
     }
 
     try {
+      await _store.saveTask(current);
       final result = await _engine.run(
         current,
         storage,
@@ -492,7 +507,23 @@ class DownloadManager extends ChangeNotifier {
       updatedAt: _nowMs,
     );
     _tasks[task.id] = failed;
-    await _store.saveTask(failed);
+    if (_store.available) await _store.saveTask(failed);
+    _stopForPersistenceError();
+  }
+
+  void _stopForPersistenceError() {
+    if (_store.available || _disposed) return;
+    for (final token in _tokens.values) {
+      token.cancel();
+    }
+    for (final task in _tasks.values.toList()) {
+      if (task.status == DownloadStatus.downloading ||
+          task.status == DownloadStatus.queued) {
+        _tasks[task.id] =
+            task.copyWith(status: DownloadStatus.paused, error: _store.error);
+      }
+    }
+    _notify(force: true);
   }
 
   Future<void> _deleteFilesAndRecord(DownloadTask task) async {
@@ -520,7 +551,7 @@ class DownloadManager extends ChangeNotifier {
 
   Future<void> resume(String id) async {
     final task = _tasks[id];
-    if (task == null || !_available) return;
+    if (task == null || !available) return;
     if (task.status != DownloadStatus.paused &&
         task.status != DownloadStatus.failed) {
       return;

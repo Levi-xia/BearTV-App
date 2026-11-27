@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
 
@@ -61,6 +62,107 @@ DownloadTask _task(
     );
 
 void main() {
+  test('disk copies restore tasks and details after losing the primary index',
+      () async {
+    final directory = await Directory.systemTemp.createTemp('download_records');
+    addTearDown(() => directory.delete(recursive: true));
+    final store = DownloadsStore(
+      persistence: RecoverableDownloadPersistence(MemoryDownloadPersistence(),
+          directory: directory),
+    );
+    await store.init();
+    await store.saveTask(_task(status: DownloadStatus.completed));
+    await store.saveSnapshot(_detail);
+    // Simulate a newly opened, empty primary database.
+    final restored = DownloadsStore(
+      persistence: RecoverableDownloadPersistence(MemoryDownloadPersistence(),
+          directory: directory),
+    );
+    await restored.init();
+    expect(restored.tasks.single.status, DownloadStatus.completed);
+    expect(restored.snapshot('a:1')!.title, _detail.title);
+  });
+
+  test('existing records are backed up and deleted records stay deleted',
+      () async {
+    final directory = await Directory.systemTemp.createTemp('download_records');
+    addTearDown(() => directory.delete(recursive: true));
+    final primary =
+        MemoryDownloadPersistence({'task:t1': jsonEncode(_task().toJson())});
+    final store = DownloadsStore(
+        persistence:
+            RecoverableDownloadPersistence(primary, directory: directory));
+    await store.init();
+    final migrated = DownloadsStore(
+        persistence: RecoverableDownloadPersistence(MemoryDownloadPersistence(),
+            directory: directory));
+    await migrated.init();
+    expect(migrated.tasks.single.id, 't1');
+    await store.deleteTask('t1');
+    final reopened = DownloadsStore(
+        persistence:
+            RecoverableDownloadPersistence(primary, directory: directory));
+    await reopened.init();
+    expect(reopened.tasks, isEmpty);
+  });
+
+  test('primary failure exposes recovery records and disables new writes',
+      () async {
+    final directory = await Directory.systemTemp.createTemp('download_records');
+    addTearDown(() => directory.delete(recursive: true));
+    final backup = RecoverableDownloadPersistence(MemoryDownloadPersistence(),
+        directory: directory);
+    await backup.init();
+    await backup.put('task:t1', jsonEncode(_task().toJson()));
+    final restored = DownloadsStore(
+        persistence: RecoverableDownloadPersistence(_UnavailablePersistence(),
+            directory: directory));
+    await restored.init();
+    expect(restored.available, isFalse);
+    expect(restored.error, contains('读取失败'));
+    expect(restored.tasks.single.id, 't1');
+    await expectLater(restored.saveTask(_task()), throwsStateError);
+  });
+
+  test('deletion survives interruption before the primary delete', () async {
+    final directory = await Directory.systemTemp.createTemp('download_records');
+    addTearDown(() => directory.delete(recursive: true));
+    final primary = _DeleteFailurePersistence();
+    final persistence =
+        RecoverableDownloadPersistence(primary, directory: directory);
+    await persistence.init();
+    await persistence.put('task:t1', jsonEncode(_task().toJson()));
+    await expectLater(persistence.delete('task:t1'), throwsStateError);
+    expect(primary.readAll(), contains('task:t1'));
+    final reopened = DownloadsStore(
+        persistence:
+            RecoverableDownloadPersistence(primary, directory: directory));
+    await reopened.init();
+    expect(reopened.tasks, isEmpty);
+  });
+
+  test('concurrent saves and unfinished temp writes preserve the latest copy',
+      () async {
+    final directory = await Directory.systemTemp.createTemp('download_records');
+    addTearDown(() => directory.delete(recursive: true));
+    final persistence = RecoverableDownloadPersistence(
+        MemoryDownloadPersistence(),
+        directory: directory);
+    await persistence.init();
+    await Future.wait([
+      persistence.put('task:t1', jsonEncode(_task().toJson())),
+      persistence.put('task:t1',
+          jsonEncode(_task(status: DownloadStatus.completed).toJson())),
+    ]);
+    final file = await directory.list().where((e) => e is File).first;
+    await File('${file.path}.tmp').writeAsString('{broken');
+    final reopened = DownloadsStore(
+        persistence: RecoverableDownloadPersistence(MemoryDownloadPersistence(),
+            directory: directory));
+    await reopened.init();
+    expect(reopened.tasks.single.status, DownloadStatus.completed);
+  });
+
   test('tasks and snapshots round-trip through a new store instance', () async {
     final persistence = MemoryDownloadPersistence();
     final store = DownloadsStore(persistence: persistence);
@@ -139,4 +241,14 @@ void main() {
 
     expect(store.tasks.single.status, DownloadStatus.paused);
   });
+}
+
+class _UnavailablePersistence extends MemoryDownloadPersistence {
+  @override
+  Future<void> init() async => throw StateError('database unavailable');
+}
+
+class _DeleteFailurePersistence extends MemoryDownloadPersistence {
+  @override
+  Future<void> delete(String key) async => throw StateError('power cut');
 }

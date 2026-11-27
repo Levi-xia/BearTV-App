@@ -48,6 +48,7 @@ class PlayerValue {
     bool? completed,
     bool? seeking,
     String? error,
+    bool clearError = false,
   }) =>
       PlayerValue(
         playing: playing ?? this.playing,
@@ -59,7 +60,7 @@ class PlayerValue {
         speed: speed ?? this.speed,
         completed: completed ?? this.completed,
         seeking: seeking ?? this.seeking,
-        error: error ?? this.error,
+        error: clearError ? error : (error ?? this.error),
       );
 }
 

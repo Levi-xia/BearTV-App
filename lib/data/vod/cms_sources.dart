@@ -66,6 +66,7 @@ List<CmsSite> parseCmsSiteRows(List<dynamic> rows) {
           : site.name,
       api: site.api,
       detail: site.detail,
+      headers: site.headers,
     ));
   }
   return out;

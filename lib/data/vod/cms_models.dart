@@ -13,12 +13,14 @@ class CmsSite {
   final String name;
   final String api;
   final String? detail;
+  final Map<String, String> headers;
 
   const CmsSite({
     required this.id,
     required this.name,
     required this.api,
     this.detail,
+    this.headers = const {},
   });
 
   Map<String, dynamic> toJson() => {
@@ -26,12 +28,19 @@ class CmsSite {
         'name': name,
         'api': api,
         if (detail != null) 'detail': detail,
+        if (headers.isNotEmpty) 'headers': headers,
       };
 
   factory CmsSite.fromJson(Map<String, dynamic> j) => CmsSite(
         id: (j['id'] as String?)?.trim() ?? '',
         name: (j['name'] as String?)?.trim() ?? '',
         api: (j['api'] as String?)?.trim() ?? '',
+        headers: {
+          if (j['headers'] is Map)
+            for (final entry in (j['headers'] as Map).entries)
+              if (entry.key is String && entry.value is String)
+                entry.key as String: entry.value as String,
+        },
         detail: switch (j['detail']) {
           final String d when d.trim().isNotEmpty => d.trim(),
           _ => null,
@@ -224,6 +233,7 @@ class ResourceOption {
   final bool available;
   final VodDetail? detail; // null when not resolved / unavailable
   final bool isCurrent;
+  final String? error;
 
   const ResourceOption({
     required this.sourceId,
@@ -234,6 +244,7 @@ class ResourceOption {
     this.available = false,
     this.detail,
     this.isCurrent = false,
+    this.error,
   });
 
   String get key => '$sourceId:$vodId';

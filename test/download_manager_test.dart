@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
@@ -11,6 +12,17 @@ import 'package:bear_tv/data/downloads/downloads_store.dart';
 import 'package:bear_tv/data/history_store.dart';
 import 'package:bear_tv/data/models.dart';
 import 'package:bear_tv/data/vod/cms_models.dart';
+
+class _RunWriteFailure extends MemoryDownloadPersistence {
+  @override
+  Future<void> put(String key, String value) async {
+    if (key.startsWith('task:') &&
+        (jsonDecode(value) as Map)['status'] == 'downloading') {
+      throw StateError('disk unavailable');
+    }
+    await super.put(key, value);
+  }
+}
 
 const _item = VodItem(
   id: 7,
@@ -231,6 +243,22 @@ void main() {
   tearDown(() {
     manager.dispose();
     if (temp.existsSync()) temp.deleteSync(recursive: true);
+  });
+
+  test('record write failure stops the queue without starting media downloads',
+      () async {
+    final brokenStore = DownloadsStore(persistence: _RunWriteFailure());
+    final isolated = makeManager(withStore: brokenStore);
+    await isolated.init();
+    addTearDown(isolated.dispose);
+    await isolated.enqueue(_request(episodes: [0, 1]));
+    await _settle();
+    expect(isolated.available, isFalse);
+    expect(isolated.storageError, contains('保存失败'));
+    expect(isolated.runningCount, 0);
+    expect(engine.started, isEmpty);
+    await isolated.resumeAll();
+    expect(engine.started, isEmpty);
   });
 
   test('downloads one episode at a time, in enqueue order', () async {
@@ -765,7 +793,8 @@ void main() {
     expect(lookup(), isNull);
   });
 
-  test('init pauses interrupted downloads and drops vanished completed files',
+  test(
+      'init pauses interrupted downloads and preserves damaged completed tasks',
       () async {
     final interrupted = tasksForRequest(_request(episodes: [0]), nowMs: now)
         .single
@@ -787,10 +816,11 @@ void main() {
     await manager2.init();
 
     final tasks = manager2.groups.single.tasks;
-    expect(tasks.length, 1);
-    expect(tasks.single.id, interrupted.id);
-    expect(tasks.single.status, DownloadStatus.paused);
-    expect(store2.tasks.any((t) => t.id == vanished.id), isFalse);
+    expect(tasks.length, 2);
+    expect(manager2.taskById(interrupted.id)!.status, DownloadStatus.paused);
+    expect(manager2.taskById(vanished.id)!.status, DownloadStatus.failed);
+    expect(manager2.taskById(vanished.id)!.error, contains('已保留视频文件'));
+    expect(store2.tasks.any((t) => t.id == vanished.id), isTrue);
     manager2.dispose();
   });
 

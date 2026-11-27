@@ -252,8 +252,10 @@ class HttpDownloadEngine implements DownloadEngine {
     final previous = await _readManifest(manifest);
     if (!_sameList(previous, identities)) {
       await _clearFragments(dir);
-      await manifest.writeAsString(jsonEncode({'segments': identities}),
+      final manifestTemp = File('${manifest.path}.tmp');
+      await manifestTemp.writeAsString(jsonEncode({'segments': identities}),
           flush: true);
+      await manifestTemp.rename(manifest.path);
     }
 
     final keyNames = <M3u8Key, String>{};
@@ -376,7 +378,6 @@ class HttpDownloadEngine implements DownloadEngine {
     final index = File(_join(dir.path, 'index.m3u8'));
     final tmp = File(_join(dir.path, 'index.m3u8.tmp'));
     await tmp.writeAsString(rewritten, flush: true);
-    if (await index.exists()) await index.delete();
     await tmp.rename(index.path);
 
     // Kept for diagnostics / manual inspection; resume only needs manifest.json.

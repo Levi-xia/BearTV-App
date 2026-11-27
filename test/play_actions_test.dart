@@ -139,6 +139,125 @@ String? _focusedAction() {
 }
 
 void main() {
+  testWidgets('an error already present on entry keeps focus on retry',
+      (tester) async {
+    final c = _controller();
+    addTearDown(c.dispose);
+    c.playError = 'entry failed';
+    await _pump(tester, c);
+    expect(FocusManager.instance.primaryFocus?.debugLabel,
+        'playbackFailureAction:0');
+    await _key(tester, LogicalKeyboardKey.arrowRight);
+    expect(FocusManager.instance.primaryFocus?.debugLabel,
+        'playbackFailureAction:2');
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
+  for (final action in ['episode', 'line']) {
+    testWidgets('switching $action clears the previous playback error overlay',
+        (tester) async {
+      final c = _controller(lines: 2);
+      addTearDown(c.dispose);
+      c.playError = 'previous failure';
+      await _pump(tester, c);
+      expect(find.textContaining('previous failure'), findsOneWidget);
+      if (action == 'episode') {
+        await c.selectEpisode(1);
+      } else {
+        await c.selectLine(1);
+      }
+      await tester.pump();
+      expect(c.playError, isNull);
+      expect(c.player.value.playing, isTrue);
+      expect(find.textContaining('previous failure'), findsNothing);
+      await tester.pumpWidget(const SizedBox.shrink());
+    });
+  }
+
+  testWidgets('playback error remains visible while backend reports playing',
+      (tester) async {
+    final c = _controller(lines: 2);
+    addTearDown(c.dispose);
+    final player = c.player as _IdlePlayer;
+    player._set(
+        player.value.copyWith(ready: true, playing: true, error: 'HTTP 403'));
+    await _pump(tester, c);
+    expect(find.textContaining('HTTP 403'), findsOneWidget);
+    expect(find.text('重试当前播放'), findsOneWidget);
+    expect(find.text('尝试下一线路'), findsOneWidget);
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
+  for (final fullscreen in [false, true]) {
+    testWidgets(
+        'failure actions own focus and support remote navigation fullscreen=$fullscreen',
+        (tester) async {
+      final c = _controller(lines: 2);
+      c.fullscreen = fullscreen;
+      addTearDown(c.dispose);
+      await _pump(tester, c);
+      final player = c.player as _IdlePlayer;
+      player._set(player.value.copyWith(error: 'open failed'));
+      await tester.pump();
+      await tester.pump();
+      expect(FocusManager.instance.primaryFocus?.debugLabel,
+          'playbackFailureAction:0');
+      await _key(tester, LogicalKeyboardKey.arrowRight);
+      expect(FocusManager.instance.primaryFocus?.debugLabel,
+          'playbackFailureAction:1');
+      await _key(tester, LogicalKeyboardKey.arrowRight);
+      expect(FocusManager.instance.primaryFocus?.debugLabel,
+          'playbackFailureAction:2');
+      await _key(tester, LogicalKeyboardKey.arrowLeft);
+      await _key(tester, LogicalKeyboardKey.enter);
+      expect(c.lineIndex, 1);
+      await tester.pumpWidget(const SizedBox.shrink());
+    });
+  }
+
+  testWidgets('buffering is visible even when backend reports playing',
+      (tester) async {
+    final c = _controller();
+    addTearDown(c.dispose);
+    final player = c.player as _IdlePlayer;
+    player._set(
+        player.value.copyWith(ready: true, playing: true, buffering: true));
+    await _pump(tester, c);
+    expect(find.text('缓冲中…'), findsOneWidget);
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
+  testWidgets('held Right enters the action grid without skipping tiles',
+      (tester) async {
+    final c = _controller();
+    addTearDown(c.dispose);
+    await _pump(tester, c);
+    await tester.sendKeyDownEvent(LogicalKeyboardKey.arrowRight);
+    await tester.pump();
+    for (var i = 0; i < 5; i++) {
+      await tester.sendKeyRepeatEvent(LogicalKeyboardKey.arrowRight);
+      await tester.pump();
+    }
+    await tester.sendKeyUpEvent(LogicalKeyboardKey.arrowRight);
+    expect(_focusedAction(), 'download');
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
+  testWidgets('closing a tool restores the tile that opened it',
+      (tester) async {
+    final c = _controller();
+    addTearDown(c.dispose);
+    await _pump(tester, c);
+    await _key(tester, LogicalKeyboardKey.arrowRight);
+    await _key(tester, LogicalKeyboardKey.arrowRight);
+    expect(_focusedAction(), 'speed');
+    await _key(tester, LogicalKeyboardKey.enter);
+    c.backFromKey();
+    await tester.pump();
+    expect(_focusedAction(), 'speed');
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
   for (final action in ['speed', 'danmaku', 'sources', 'skip']) {
     testWidgets('nested $action sheet suspends menu idle timeout',
         (tester) async {
@@ -266,10 +385,11 @@ void main() {
     expect(find.text('倍速'), findsNothing);
     expect(c.page, AppPage.play);
 
-    // Focus is back on the grid, so OK re-opens a sheet instead of falling into
-    // the player behind it. (With one line the first tile is 下载.)
+    // Return to the tile that opened the sheet, including pointer activation.
+    // OK opens speed again instead of jumping to the grid's first tile.
+    expect(_focusedAction(), 'speed');
     await _key(tester, LogicalKeyboardKey.select);
-    expect(find.text('下载选集'), findsOneWidget);
+    expect(find.text('倍速'), findsOneWidget);
   });
 
   testWidgets('Right walks the panel one tile per press — no dead press',

@@ -46,6 +46,33 @@ VodDetail _detail(String site, {String title = '三体', int eps = 2}) => VodDet
     );
 
 void main() {
+  test('resource stream publishes a fast source before a slow source finishes',
+      () async {
+    final client = _FakeClient();
+    final slow = Completer<List<SearchHit>>();
+    client.searches['a'] = () async => [_hit('a', '三体')];
+    client.searches['b'] = () => slow.future;
+    client.details['a'] = (_) async => _detail('a');
+    client.details['b'] = (_) async => _detail('b');
+    final repo = VodRepository(client: client);
+    addTearDown(repo.close);
+    final batches = <List<ResourceOption>>[];
+    final first = Completer<void>();
+    final done = Completer<void>();
+    final subscription =
+        repo.watchResourceOptions('三体', [_siteA, _siteB]).listen((batch) {
+      batches.add(batch);
+      if (!first.isCompleted) first.complete();
+    }, onDone: done.complete);
+    addTearDown(subscription.cancel);
+    await first.future;
+    expect(batches.last.map((o) => o.sourceId), ['a']);
+    expect(done.isCompleted, isFalse);
+    slow.complete([_hit('b', '三体')]);
+    await done.future;
+    expect(batches.last, hasLength(2));
+  });
+
   test('fallback races two details and stops scheduling after a winner',
       () async {
     final client = _FakeClient();

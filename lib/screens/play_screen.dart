@@ -52,6 +52,7 @@ class _PlayScreenState extends State<PlayScreen> {
   bool _downloadOpen = false;
   // Floating control sheet for one side-panel action (线路 / 切换资源 / 倍速 …).
   _PlayAction? _action;
+  FocusNode? _sheetReturnNode;
   late final AppController _app;
   late final bool Function() _overlayBackInterceptor;
 
@@ -72,11 +73,16 @@ class _PlayScreenState extends State<PlayScreen> {
     };
     _app.playOverlayBackInterceptor = _overlayBackInterceptor;
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (mounted) _playerNode.requestFocus();
+      if (mounted &&
+          _app.playError == null &&
+          _app.player.value.error == null) {
+        _playerNode.requestFocus();
+      }
     });
   }
 
-  void _openAction(_PlayAction action) {
+  void _openAction(_PlayAction action, {FocusNode? returnNode}) {
+    _sheetReturnNode = returnNode ?? FocusManager.instance.primaryFocus;
     if (action == _PlayAction.download) {
       if (_downloadOpen) return;
       setState(() => _downloadOpen = true);
@@ -89,14 +95,22 @@ class _PlayScreenState extends State<PlayScreen> {
   void _closeAction() {
     if (_action == null) return;
     setState(() => _action = null);
-    _actionNodes.focusFirst(_app);
+    _restoreSheetFocus();
   }
 
   void _closeDownloadSheet() {
     if (!_downloadOpen) return;
     setState(() => _downloadOpen = false);
-    // Both sheets are opened from a tile, so hand focus back to the grid.
-    _actionNodes.focusFirst(_app);
+    _restoreSheetFocus();
+  }
+
+  void _restoreSheetFocus() {
+    final node = _sheetReturnNode;
+    if (node?.context != null && node!.canRequestFocus) {
+      node.requestFocus();
+    } else {
+      _playerNode.requestFocus();
+    }
   }
 
   @override
@@ -151,6 +165,8 @@ class _PlayScreenState extends State<PlayScreen> {
                                 aspectRatio: 16 / 9,
                                 child: _Player(
                                     playerNode: _playerNode,
+                                    onOpenResources: () =>
+                                        _openAction(_PlayAction.sources),
                                     onPanelRight: () =>
                                         _actionNodes.focusFirst(_app))),
                           ),
@@ -161,7 +177,8 @@ class _PlayScreenState extends State<PlayScreen> {
                         width: AppDims.sideW,
                         child: _SidePanel(
                           nodes: _actionNodes,
-                          onOpenAction: _openAction,
+                          onOpenAction: (action) => _openAction(action,
+                              returnNode: _actionNodes[action]),
                         ),
                       ),
                     ],
@@ -231,8 +248,12 @@ class _VideoSurface extends StatelessWidget {
 }
 
 class _Player extends StatelessWidget {
-  const _Player({required this.playerNode, required this.onPanelRight});
+  const _Player(
+      {required this.playerNode,
+      required this.onPanelRight,
+      required this.onOpenResources});
   final FocusNode playerNode;
+  final VoidCallback onOpenResources;
 
   /// Hands focus to the first side-panel tile. The panel owns one stable node
   /// per action, so this always lands on a real, already-mounted tile.
@@ -246,8 +267,15 @@ class _Player extends StatelessWidget {
       autofocus: true,
       ensureVisibleAlignment:
           0.5, // keep the player clear of the top header on scroll-up
-      onPressed: () => app.setFullscreen(true), // OK on player → fullscreen
+      onPressed: () {
+        if (app.player.value.error != null || app.playError != null) {
+          app.retryCurrentPlayback();
+        } else {
+          app.setFullscreen(true);
+        }
+      },
       onKeyEvent: (node, event) {
+        if (!playerNode.hasPrimaryFocus) return KeyEventResult.ignored;
         // Right off the player → 播放设置 side panel (not the header search).
         // Only on the initial key-down: a held key repeats after focus has
         // already moved, and acting on the repeat would skip a tile.
@@ -282,13 +310,13 @@ class _Player extends StatelessWidget {
             borderRadius: BorderRadius.circular(20),
             child: Stack(
               fit: StackFit.expand,
-              children: const [
-                _VideoSurface(),
-                _DanmakuLayer(),
-                _StatusOverlay(),
-                _PlayStateBadge(),
-                _CacheBadge(),
-                _PlayerControls(),
+              children: [
+                const _VideoSurface(),
+                const _DanmakuLayer(),
+                _StatusOverlay(onOpenResources: onOpenResources),
+                _PlayStateBadge(onOpenResources: onOpenResources),
+                const _CacheBadge(),
+                const _PlayerControls(),
               ],
             ),
           ),
@@ -300,14 +328,133 @@ class _Player extends StatelessWidget {
 
 /// Centered状态：正在匹配资源 / 无资源错误 / 缓冲中。
 class _StatusOverlay extends StatelessWidget {
-  const _StatusOverlay();
+  const _StatusOverlay({this.onOpenResources});
+  final VoidCallback? onOpenResources;
 
   @override
   Widget build(BuildContext context) {
     final app = AppScope.of(context);
     if (app.resolving) return const _CenterNote('正在匹配可播放资源…');
-    if (app.playError != null) return _CenterNote(app.playError!);
+    if (app.playError != null) {
+      return _PlaybackFailure(app.playError!, onOpenResources: onOpenResources);
+    }
     return const SizedBox.shrink();
+  }
+}
+
+class _PlaybackFailure extends StatefulWidget {
+  const _PlaybackFailure(this.message, {this.onOpenResources});
+  final String message;
+  final VoidCallback? onOpenResources;
+
+  @override
+  State<_PlaybackFailure> createState() => _PlaybackFailureState();
+}
+
+class _PlaybackFailureState extends State<_PlaybackFailure> {
+  final _scope = FocusScopeNode(debugLabel: 'playbackFailure');
+  final _nodes = List.generate(
+      4, (i) => FocusNode(debugLabel: 'playbackFailureAction:$i'));
+  final _visibleNodes = <FocusNode>[];
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _nodes.first.requestFocus();
+    });
+  }
+
+  @override
+  void dispose() {
+    _scope.dispose();
+    for (final node in _nodes) {
+      node.dispose();
+    }
+    super.dispose();
+  }
+
+  KeyEventResult _onKey(FocusNode node, KeyEvent event) {
+    if (event is! KeyDownEvent && event is! KeyRepeatEvent) {
+      return KeyEventResult.ignored;
+    }
+    final key = event.logicalKey;
+    final forward = key == LogicalKeyboardKey.arrowRight ||
+        key == LogicalKeyboardKey.arrowDown;
+    final backward = key == LogicalKeyboardKey.arrowLeft ||
+        key == LogicalKeyboardKey.arrowUp;
+    if (!forward && !backward) return KeyEventResult.ignored;
+    final current = _visibleNodes.indexWhere((node) => node.hasFocus);
+    final next = (current + (forward ? 1 : -1)) % _visibleNodes.length;
+    _visibleNodes[next].requestFocus();
+    return KeyEventResult.handled;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final app = AppScope.of(context);
+    final lines = app.currentDetail?.playLines ?? const <PlayLine>[];
+    _visibleNodes
+      ..clear()
+      ..addAll([
+        _nodes[0],
+        if (lines.length > 1) _nodes[1],
+        if (widget.onOpenResources != null) _nodes[2],
+        _nodes[3],
+      ]);
+    return FocusScope(
+      node: _scope,
+      onKeyEvent: _onKey,
+      child: Center(
+        child: Container(
+          constraints: const BoxConstraints(maxWidth: 580),
+          padding: const EdgeInsets.all(20),
+          decoration: BoxDecoration(
+            color: const Color(0xDD101018),
+            borderRadius: BorderRadius.circular(16),
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(widget.message,
+                  textAlign: TextAlign.center,
+                  maxLines: 4,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(color: AppColors.text, fontSize: 16)),
+              const SizedBox(height: 16),
+              Wrap(spacing: 12, runSpacing: 12, children: [
+                SelectableChip(
+                  label: '重试当前播放',
+                  selected: false,
+                  focusNode: _nodes[0],
+                  onPressed: app.retryCurrentPlayback,
+                ),
+                if (lines.length > 1)
+                  SelectableChip(
+                    label: '尝试下一线路',
+                    selected: false,
+                    focusNode: _nodes[1],
+                    onPressed: app.retryNextLine,
+                  ),
+                if (widget.onOpenResources != null)
+                  SelectableChip(
+                    label: '切换资源',
+                    selected: false,
+                    focusNode: _nodes[2],
+                    onPressed: widget.onOpenResources!,
+                  ),
+                SelectableChip(
+                  label: '返回',
+                  selected: false,
+                  focusNode: _nodes[3],
+                  onPressed: app.backFromKey,
+                ),
+              ]),
+            ],
+          ),
+        ),
+      ),
+    );
   }
 }
 
@@ -339,7 +486,8 @@ class _CenterNote extends StatelessWidget {
 /// buffering it shows "缓冲中…" instead, so buffering never looks like a manual
 /// pause. Nothing is drawn while playing.
 class _PlayStateBadge extends StatelessWidget {
-  const _PlayStateBadge();
+  const _PlayStateBadge({this.onOpenResources});
+  final VoidCallback? onOpenResources;
 
   @override
   Widget build(BuildContext context) {
@@ -348,10 +496,9 @@ class _PlayStateBadge extends StatelessWidget {
     return ValueListenableBuilder<PlayerValue>(
       valueListenable: app.player,
       builder: (context, v, _) {
-        if (v.playing) return const SizedBox.shrink();
         if (v.error != null) {
-          return _playbackBadge(
-              Icons.error_outline_rounded, '播放错误\n${v.error}');
+          return _PlaybackFailure('播放失败\n${v.error}',
+              onOpenResources: onOpenResources);
         }
         if (v.completed) {
           return _playbackBadge(Icons.stop_circle_outlined, '播放结束');
@@ -366,6 +513,7 @@ class _PlayStateBadge extends StatelessWidget {
                     fontFamilyFallback: kFontFallback)),
           );
         }
+        if (v.playing) return const SizedBox.shrink();
         return _playbackBadge(Icons.pause_rounded, '已暂停');
       },
     );
@@ -789,6 +937,11 @@ class _ActionTile extends StatelessWidget {
         focusNode: focusNode,
         onPressed: onPressed,
         onKeyEvent: (node, event) {
+          if (event is KeyRepeatEvent &&
+              (event.logicalKey == LogicalKeyboardKey.arrowRight ||
+                  event.logicalKey == LogicalKeyboardKey.arrowLeft)) {
+            return KeyEventResult.handled;
+          }
           if (event is! KeyDownEvent && event is! KeyRepeatEvent) {
             return KeyEventResult.ignored;
           }
@@ -1115,6 +1268,14 @@ class _SwitchResourceSectionState extends State<_SwitchResourceSection> {
           ],
         ),
         const SizedBox(height: 10),
+        SelectableChip(
+          label: app.loadingResources ? '取消查找' : '重新查找资源',
+          selected: false,
+          onPressed: app.loadingResources
+              ? app.cancelResourceLookup
+              : app.retryResourceLookup,
+        ),
+        const SizedBox(height: 10),
         if (opts.isEmpty)
           Text(
             app.loadingResources ? '正在查找其他资源…' : '没有找到其他资源',
@@ -1130,11 +1291,20 @@ class _SwitchResourceSectionState extends State<_SwitchResourceSection> {
             children: [
               for (var i = 0; i < opts.length; i++)
                 SelectableChip(
-                  label: opts[i].episodeCount > 0
-                      ? '${opts[i].sourceName} · ${opts[i].episodeCount}集'
-                      : opts[i].sourceName,
+                  key: ValueKey('resource:${opts[i].key}'),
+                  label: opts[i].error != null
+                      ? '${opts[i].sourceName} · ${opts[i].error}'
+                      : opts[i].episodeCount > 0
+                          ? '${opts[i].sourceName} · ${opts[i].episodeCount}集'
+                          : opts[i].sourceName,
                   selected: opts[i].isCurrent,
-                  onPressed: () => app.switchResource(opts[i]),
+                  onPressed: () {
+                    if (opts[i].error != null) {
+                      app.retryResourceLookup();
+                    } else {
+                      app.switchResource(opts[i]);
+                    }
+                  },
                 ),
             ],
           ),
@@ -1375,6 +1545,16 @@ class _FullscreenPlayerState extends State<_FullscreenPlayer> {
   Timer? _overlayIdleTimer;
   static const _overlayIdleTimeout = Duration(seconds: 5);
 
+  void _openResources() {
+    _overlayIdleTimer?.cancel();
+    setState(() {
+      _episodesOpen = false;
+      _downloadOpen = false;
+      _menuOpen = true;
+      _action = _PlayAction.sources;
+    });
+  }
+
   void _resetOverlayIdleTimer() {
     _overlayIdleTimer?.cancel();
     // Nested tools may wait on network results or require lengthy edits.
@@ -1483,6 +1663,10 @@ class _FullscreenPlayerState extends State<_FullscreenPlayer> {
     if (_menuOpen || _episodesOpen || _downloadOpen || _action != null) {
       return KeyEventResult.ignored;
     }
+    if ((app.player.value.error != null || app.playError != null) &&
+        !_rootNode.hasPrimaryFocus) {
+      return KeyEventResult.ignored;
+    }
 
     if (k == LogicalKeyboardKey.arrowLeft) {
       app.seekBy(const Duration(seconds: -10));
@@ -1526,7 +1710,11 @@ class _FullscreenPlayerState extends State<_FullscreenPlayer> {
         k == LogicalKeyboardKey.numpadEnter ||
         k == LogicalKeyboardKey.space ||
         k == LogicalKeyboardKey.gameButtonA) {
-      app.player.togglePlay();
+      if (app.player.value.error != null || app.playError != null) {
+        if (event is KeyDownEvent) app.retryCurrentPlayback();
+      } else {
+        app.player.togglePlay();
+      }
       _flashProgress();
       return KeyEventResult.handled;
     }
@@ -1559,8 +1747,8 @@ class _FullscreenPlayerState extends State<_FullscreenPlayer> {
             children: [
               const _VideoSurface(),
               const _DanmakuLayer(),
-              const _StatusOverlay(),
-              const _PlayStateBadge(),
+              _StatusOverlay(onOpenResources: _openResources),
+              _PlayStateBadge(onOpenResources: _openResources),
               const _CacheBadge(),
               // progress / status scrim
               if (_showProgress || !app.player.value.playing)

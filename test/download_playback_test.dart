@@ -449,6 +449,81 @@ void main() {
     expect(c.history.entryFor(_item.key)!.positionMs, 120000);
   });
 
+  test('changing episodes does not discard a pending catalogue refresh',
+      () async {
+    final vod = _UpdatingVod();
+    await setUpController(cachedEpisodes: [0, 1], vod: vod);
+    await c.openTitle(_item);
+    await c.selectEpisode(0);
+    vod.response.complete(VodDetail(
+      sourceId: _detail.sourceId,
+      sourceName: _detail.sourceName,
+      vodId: _detail.vodId,
+      title: _detail.title,
+      playLines: [
+        PlayLine(name: '线路1', episodes: [
+          ..._detail.playLines.first.episodes,
+          const Episode(title: '第4集', url: 'https://cdn.test/1/ep3.m3u8'),
+        ]),
+      ],
+    ));
+    await waitUntil(() => c.currentEpisodes.length == 4);
+    expect(c.currentEpisodes, hasLength(4));
+    expect(c.episodeIndex, 0);
+    expect(player.value.playing, isTrue);
+  });
+
+  test('runtime cache failure falls back online once and preserves position',
+      () async {
+    await setUpController(cachedEpisodes: [1]);
+    await c.openTitle(_item);
+    final position = player.value.position;
+    player._set(player.value.copyWith(error: 'cache read failure'));
+    await waitUntil(() =>
+        player.opened.last == _detail.playLines.first.episodes[1].url &&
+        player.value.playing);
+    expect(c.playingFromCache, isFalse);
+    expect(player.opened.last, _detail.playLines.first.episodes[1].url);
+    expect(player.value.position, position);
+    final opened = player.opened.length;
+    player._set(player.value.copyWith(error: 'online failure'));
+    await Future<void>.delayed(Duration.zero);
+    expect(player.opened.length, opened);
+    expect(player.value.error, 'online failure');
+  });
+
+  test('runtime online failure tries a matching episode on another line once',
+      () async {
+    await setUpController(cachedEpisodes: []);
+    await c.openTitle(_item);
+    c.currentDetail = VodDetail(
+      sourceId: _detail.sourceId,
+      sourceName: _detail.sourceName,
+      vodId: _detail.vodId,
+      title: _detail.title,
+      playLines: [
+        ..._detail.playLines,
+        PlayLine(name: '备用线路', episodes: [
+          for (final ep in _detail.playLines.first.episodes)
+            Episode(
+                title: ep.title,
+                url: ep.url.replaceFirst('cdn.test', 'backup.test')),
+        ]),
+      ],
+    );
+    final position = player.value.position;
+    player._set(player.value.copyWith(error: 'stream failed'));
+    await waitUntil(() =>
+        player.opened.last.contains('backup.test') && player.value.playing);
+    expect(c.lineIndex, 1);
+    expect(c.episodeIndex, 1);
+    expect(player.value.position, position);
+    final opened = player.opened.length;
+    player._set(player.value.copyWith(error: 'second failure'));
+    await Future<void>.delayed(Duration.zero);
+    expect(player.opened.length, opened);
+  });
+
   test('seek preview near ending does not auto-advance the episode', () async {
     await setUpController(cachedEpisodes: [1]);
     await c.openTitle(_item);

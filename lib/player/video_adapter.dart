@@ -17,11 +17,21 @@ import 'player_controller.dart';
 /// [VideoPlayer] texture; it is null until [open] initialises successfully.
 class VideoAdapter extends ChangeNotifier
     implements PlayerController, DeferredSeekPlayer {
-  VideoAdapter({VideoPlayerController Function(String)? controllerFactory})
-      : _controllerFactory = controllerFactory;
+  VideoAdapter({
+    VideoPlayerController Function(String, Map<String, String>)?
+        controllerFactory,
+    this.initializeTimeout = const Duration(seconds: 45),
+    this.cleanupTimeout = const Duration(seconds: 5),
+  }) : _controllerFactory = controllerFactory;
 
-  final VideoPlayerController Function(String)? _controllerFactory;
+  final VideoPlayerController Function(String, Map<String, String>)?
+      _controllerFactory;
+  final Duration initializeTimeout;
+  final Duration cleanupTimeout;
   VideoPlayerController? _vp;
+  VideoPlayerController? _initializing;
+  final _disposals = Expando<Future<void>>();
+  final _initializations = Expando<Future<void>>();
   PlayerValue _value = const PlayerValue();
   double _speed = 1.0;
   int _openToken = 0;
@@ -47,27 +57,53 @@ class VideoAdapter extends ChangeNotifier
     _lastCompleted = null;
     _lastError = null;
     await _disposeInner();
+    if (token != _openToken) return;
     _value = PlayerValue(speed: _speed); // not ready yet
     notifyListeners();
     if (url == null || url.isEmpty) return;
 
-    final vp = _controllerFor(url, headers);
+    VideoPlayerController? vp;
     try {
-      await vp.initialize();
+      final uri = Uri.tryParse(url);
+      debugPrint('[video] open token=$token scheme=${uri?.scheme} '
+          'host=${uri?.host} headers=${headers?.keys.join(',') ?? ''}');
+      // Preserve the backend's native HTTP defaults. A synthetic browser UA
+      // changes CDN responses and also affects HLS child requests in libmdk.
+      // Only forward headers explicitly configured for this source.
+      vp = _controllerFor(url, headers);
+      _initializing = vp;
+      final initialization = vp.initialize();
+      _initializations[vp] = initialization;
+      await initialization.timeout(initializeTimeout);
+      if (identical(_initializing, vp)) _initializing = null;
       if (token != _openToken) {
         // A newer open() superseded this one while we were initialising.
-        await vp.dispose();
+        await _disposeController(vp);
         return;
       }
       _vp = vp;
       vp.addListener(_onVp);
       await vp.setPlaybackSpeed(_speed);
+      if (token != _openToken) return;
       _sync(ready: true);
-    } catch (_) {
-      await vp.dispose();
+    } catch (e) {
+      debugPrint('[video] open failed token=$token current=$_openToken: $e');
+      if (identical(_initializing, vp)) _initializing = null;
+      if (vp != null && identical(_vp, vp)) {
+        vp.removeListener(_onVp);
+        _vp = null;
+      }
       if (token == _openToken) {
-        _value = PlayerValue(speed: _speed); // stays not-ready → UI shows error
+        _value = PlayerValue(
+          speed: _speed,
+          error: e is TimeoutException
+              ? '打开视频超时，请重试或切换线路'
+              : '播放器打开失败：${e.toString().replaceFirst('Exception: ', '')}',
+        );
         notifyListeners();
+      }
+      if (vp != null) {
+        unawaited(_disposeController(vp).catchError((Object _) {}));
       }
     }
   }
@@ -77,7 +113,9 @@ class VideoAdapter extends ChangeNotifier
   /// Everything else stays on the network backend.
   VideoPlayerController _controllerFor(
       String url, Map<String, String>? headers) {
-    if (_controllerFactory != null) return _controllerFactory(url);
+    if (_controllerFactory != null) {
+      return _controllerFactory(url, headers ?? const {});
+    }
     final uri = Uri.tryParse(url);
     if (uri != null && uri.scheme == 'file') {
       return VideoPlayerController.file(File.fromUri(uri));
@@ -119,6 +157,7 @@ class VideoAdapter extends ChangeNotifier
       completed: _seekTarget == null && v.isCompleted,
       seeking: _seekTarget != null,
       error: error,
+      clearError: true,
     );
     notifyListeners();
   }
@@ -226,16 +265,49 @@ class VideoAdapter extends ChangeNotifier
     _seekAfter = null;
     _seekWorker = null;
     final vp = _vp;
+    final initializing = _initializing;
     _vp = null;
+    _initializing = null;
     if (vp != null) {
       vp.removeListener(_onVp);
-      await vp.dispose();
     }
+    if (initializing != null && !identical(initializing, vp)) {
+      // An abandoned initialization must clean up when it eventually settles,
+      // but must not block a retry or a different source indefinitely.
+      unawaited(_disposeController(initializing).catchError((Object _) {}));
+    }
+    if (vp != null) {
+      try {
+        await _disposeController(vp).timeout(cleanupTimeout);
+      } catch (error) {
+        debugPrint(
+            '[video] previous controller cleanup pending/failed: $error');
+      }
+    }
+  }
+
+  Future<void> _disposeController(VideoPlayerController controller) {
+    final existing = _disposals[controller];
+    if (existing != null) return existing;
+    final initialization = _initializations[controller];
+    final cleanup = () async {
+      if (initialization != null) {
+        try {
+          await initialization;
+        } catch (_) {
+          // Failed initialization still owns resources that need disposal.
+        }
+      }
+      await controller.dispose();
+    }();
+    _disposals[controller] = cleanup;
+    return cleanup;
   }
 
   @override
   void dispose() {
-    _disposeInner();
+    _openToken++;
+    unawaited(_disposeInner().catchError((Object _) {}));
     super.dispose();
   }
 }

@@ -11,6 +11,25 @@ class CatalogueException implements Exception {
   final String message;
 }
 
+/// Cancellation belongs to a single resolution, not the shared HTTP client.
+class CmsRequestScope {
+  CmsRequestScope({this.reportErrors = false});
+  final bool reportErrors;
+  static final Object _zoneKey = Object();
+  static int _nextId = 0;
+  final int id = ++_nextId;
+  final Completer<void> _aborted = Completer<void>();
+  bool get cancelled => _aborted.isCompleted;
+  Future<void> get whenCancelled => _aborted.future;
+  static CmsRequestScope? get current =>
+      Zone.current[_zoneKey] as CmsRequestScope?;
+  T run<T>(T Function() action) =>
+      runZoned(action, zoneValues: {_zoneKey: this});
+  void cancel() {
+    if (!cancelled) _aborted.complete();
+  }
+}
+
 /// MacCMS apiv3 JSON client, ported from BearTV `src/services/cmsClient.js`.
 ///
 /// Protocol:
@@ -28,12 +47,49 @@ class CatalogueException implements Exception {
 class CmsClient {
   CmsClient({http.Client? client, Duration? timeout})
       : _client = client ?? http.Client(),
-        _timeout = timeout ?? const Duration(seconds: 8);
+        _timeout = timeout ?? const Duration(seconds: 15);
 
   final http.Client _client;
   final Duration _timeout;
 
   void close() => _client.close();
+
+  /// CMS providers commonly protect their API/detail endpoints with a
+  /// browser-like UA. Keep this limited to catalogue requests; playback
+  /// requests are passed to libmdk unchanged except for explicit site headers.
+  Map<String, String> _requestHeaders(Map<String, String>? overrides,
+      {required String accept}) {
+    final result = <String, String>{
+      'User-Agent': 'Mozilla/5.0 (Linux; Android 9; K) AppleWebKit/537.36 '
+          '(KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36',
+      'Accept': accept,
+    };
+    for (final entry in (overrides ?? const <String, String>{}).entries) {
+      result.removeWhere(
+          (key, _) => key.toLowerCase() == entry.key.toLowerCase());
+      result[entry.key] = entry.value;
+    }
+    return result;
+  }
+
+  Future<http.Response> _get(Uri uri, {Map<String, String>? headers}) async {
+    final scope = CmsRequestScope.current;
+    if (scope?.cancelled == true) throw http.RequestAbortedException(uri);
+    final abort = Completer<void>();
+    if (scope != null) {
+      unawaited(scope.whenCancelled.then((_) {
+        if (!abort.isCompleted) abort.complete();
+      }));
+    }
+    final request =
+        http.AbortableRequest('GET', uri, abortTrigger: abort.future);
+    if (headers != null) request.headers.addAll(headers);
+    return _client.send(request).then(http.Response.fromStream).timeout(
+        _timeout, onTimeout: () {
+      if (!abort.isCompleted) abort.complete();
+      throw TimeoutException('CMS request');
+    });
+  }
 
   /// General m3u8 matcher (BearTV `M3U8_PATTERN`): a leading `$` then a URL.
   static final RegExp _m3u8 = RegExp(r'\$https?://[^"' "'" r'\s]+?\.m3u8');
@@ -42,11 +98,12 @@ class CmsClient {
   static final RegExp _h1 = RegExp(r'<h1[^>]*>([^<]+)</h1>');
 
   Future<Map<String, dynamic>?> _getJson(Uri uri,
-      {bool reportErrors = false}) async {
+      {bool reportErrors = false, Map<String, String>? headers}) async {
+    reportErrors =
+        reportErrors || CmsRequestScope.current?.reportErrors == true;
     try {
-      final res = await _client.get(uri, headers: const {
-        'Accept': 'application/json',
-      }).timeout(_timeout);
+      final res = await _get(uri,
+          headers: _requestHeaders(headers, accept: 'application/json'));
       if (res.statusCode < 200 || res.statusCode >= 300) {
         throw CatalogueException('播放源响应异常（HTTP ${res.statusCode}）');
       }
@@ -77,7 +134,7 @@ class CmsClient {
     final sep = base.contains('?') ? '&' : '?';
     final uri = Uri.parse(
         '$base${sep}ac=videolist&wd=${Uri.encodeQueryComponent(query)}');
-    final data = await _getJson(uri);
+    final data = await _getJson(uri, headers: site.headers);
     final list = data?['list'];
     if (list is! List || list.isEmpty) return const [];
     final out = <SearchHit>[];
@@ -124,7 +181,8 @@ class CmsClient {
     final base = site.api;
     final sep = base.contains('?') ? '&' : '?';
     final uri = Uri.parse('$base${sep}ac=videolist&ids=$vodId');
-    final data = await _getJson(uri, reportErrors: reportErrors);
+    final data =
+        await _getJson(uri, reportErrors: reportErrors, headers: site.headers);
     final list = data?['list'];
     if (list is! List) {
       if (reportErrors) throw const CatalogueException('播放源返回的数据格式异常');
@@ -143,10 +201,14 @@ class CmsClient {
   /// Special sources: scrape the HTML detail page for m3u8 links.
   Future<VodDetail?> _fetchScrapedDetail(CmsSite site, String vodId,
       {bool reportErrors = false}) async {
+    reportErrors =
+        reportErrors || CmsRequestScope.current?.reportErrors == true;
     final uri = Uri.parse('${site.detail}/index.php/vod/detail/id/$vodId.html');
     String html;
     try {
-      final res = await _client.get(uri).timeout(_timeout);
+      final res = await _get(uri,
+          headers: _requestHeaders(site.headers,
+              accept: 'text/html,application/xhtml+xml,*/*'));
       if (res.statusCode < 200 || res.statusCode >= 300) {
         throw CatalogueException('播放源响应异常（HTTP ${res.statusCode}）');
       }

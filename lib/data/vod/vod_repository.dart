@@ -12,11 +12,21 @@ import 'cms_models.dart';
 /// All multi-source work is concurrent and per-source failures degrade
 /// silently, so one dead provider never blocks the rest.
 class VodRepository {
-  VodRepository({CmsClient? client}) : _client = client ?? CmsClient();
+  VodRepository({
+    CmsClient? client,
+    this.resourceConcurrency = 3,
+    this.resourceTimeout = const Duration(seconds: 35),
+  })  : assert(resourceConcurrency > 0),
+        _client = client ?? CmsClient();
+
+  final int resourceConcurrency;
+  final Duration resourceTimeout;
 
   final CmsClient _client;
+  bool _closed = false;
 
   void close() {
+    _closed = true;
     _clearMemo();
     _client.close();
   }
@@ -34,14 +44,37 @@ class VodRepository {
   // once in [resolveByTitle] to pick a stream, then again in
   // [loadResourceOptions] to build the 切换资源 list. The second pass also
   // re-fetches details already probed by the first. Memoizing the *future*
-  // (not just the result) also dedupes requests that are still in flight when
-  // the second pass starts. Everything expires quickly — this is a dedupe
+  // (not just the result) dedupes in-flight work within a request scope.
+  // Completed results are also published under an unscoped key for reuse by
+  // later scopes. In-flight work stays isolated so one caller cannot cancel
+  // another caller's HTTP request. Everything expires quickly — this is a dedupe
   // window for one playback start, not a catalogue cache.
   static const Duration _memoTtl = Duration(minutes: 2);
   static const int _memoLimit = 96;
 
   final Map<String, _Pending<List<SearchHit>>> _searchMemo = {};
   final Map<String, _Pending<VodDetail?>> _detailMemo = {};
+  final Map<String, Object> _detailVersions = {};
+
+  Object _newDetailVersion(String key) {
+    final version = Object();
+    _detailVersions.remove(key);
+    _detailVersions[key] = version;
+    while (_detailVersions.length > _memoLimit) {
+      _detailVersions.remove(_detailVersions.keys.first);
+    }
+    return version;
+  }
+
+  void _invalidateDetailMemo(String baseKey) {
+    _detailMemo.removeWhere(
+        (key, _) => key == baseKey || key.endsWith('\u0000$baseKey'));
+  }
+
+  String _scopedKey(String key) {
+    final scope = CmsRequestScope.current;
+    return scope == null ? key : '${scope.id}\u0000$key';
+  }
 
   _Pending<T>? _lookup<T>(Map<String, _Pending<T>> memo, String key) {
     final entry = memo[key];
@@ -56,6 +89,7 @@ class VodRepository {
   }
 
   void _store<T>(Map<String, _Pending<T>> memo, String key, _Pending<T> entry) {
+    if (_closed) return;
     memo[key] = entry;
     while (memo.length > _memoLimit) {
       memo.remove(memo.keys.first);
@@ -63,24 +97,57 @@ class VodRepository {
   }
 
   /// Search [query] on [site], sharing an in-flight/just-finished request.
-  Future<List<SearchHit>> _search(CmsSite site, String query) {
-    final key = '${site.id}\u0000$query';
-    final hit = _lookup(_searchMemo, key);
+  Future<List<SearchHit>> _search(CmsSite site, String query) async {
+    final baseKey = '${site.id}\u0000$query';
+    final key = _scopedKey(baseKey);
+    final scope = CmsRequestScope.current;
+    final shared = scope == null ? null : _lookup(_searchMemo, baseKey);
+    final hit = _lookup(_searchMemo, key) ??
+        (shared?.completed == true ? shared : null);
     if (hit != null) return hit.future;
     final f = _client.searchSource(site, query);
     _store(_searchMemo, key, _Pending(f));
-    return f;
+    try {
+      final hits = await f;
+      if (scope?.cancelled != true && hits.isNotEmpty) {
+        _store(_searchMemo, baseKey,
+            _Pending(Future.value(hits), completed: true));
+      } else if (identical(_searchMemo[key]?.future, f)) {
+        _searchMemo.remove(key);
+      }
+      return hits;
+    } catch (_) {
+      if (identical(_searchMemo[key]?.future, f)) _searchMemo.remove(key);
+      rethrow;
+    }
   }
 
   /// Detail lookup with the same dedupe. Failures (null) are not memoized, so
   /// a later attempt can still succeed.
   Future<VodDetail?> _detailOf(CmsSite site, String vodId) async {
-    final key = '${site.id}\u0000$vodId';
-    final hit = _lookup(_detailMemo, key);
+    final baseKey = '${site.id}\u0000$vodId';
+    final version = _detailVersions[baseKey] ?? _newDetailVersion(baseKey);
+    final key = _scopedKey(baseKey);
+    final scope = CmsRequestScope.current;
+    final shared = scope == null ? null : _lookup(_detailMemo, baseKey);
+    final hit = _lookup(_detailMemo, key) ??
+        (shared?.completed == true ? shared : null);
     if (hit != null) return hit.future;
     final f = _client.fetchDetail(site, vodId);
     _store(_detailMemo, key, _Pending(f));
-    final detail = await f;
+    VodDetail? detail;
+    try {
+      detail = await f;
+    } catch (_) {
+      if (identical(_detailMemo[key]?.future, f)) _detailMemo.remove(key);
+      rethrow;
+    }
+    if (scope?.cancelled != true &&
+        detail != null &&
+        identical(version, _detailVersions[baseKey])) {
+      _store(_detailMemo, baseKey,
+          _Pending(Future.value(detail), completed: true));
+    }
     if (detail == null && identical(_detailMemo[key]?.future, f)) {
       _detailMemo.remove(key);
     }
@@ -90,6 +157,7 @@ class VodRepository {
   void _clearMemo() {
     _searchMemo.clear();
     _detailMemo.clear();
+    _detailVersions.clear();
   }
 
   /// Direct keyword search across every enabled source, concurrently. Returns
@@ -231,6 +299,82 @@ class VodRepository {
   /// path where no search ran before this pass. It is flagged as current and
   /// floated to the top, and stays in the list even when the source's search
   /// page wouldn't have listed it.
+  Stream<List<ResourceOption>> watchResourceOptions(
+    String title,
+    List<CmsSite> sites, {
+    VodDetail? current,
+  }) {
+    late final StreamController<List<ResourceOption>> controller;
+    var cancelled = false;
+    var nextSite = 0;
+    final scopes = <CmsRequestScope>{};
+    final options = <ResourceOption>[];
+    void publish() {
+      if (cancelled) return;
+      options.sort((a, b) {
+        if (a.isCurrent != b.isCurrent) return a.isCurrent ? -1 : 1;
+        if (a.available != b.available) return a.available ? -1 : 1;
+        return b.episodeCount.compareTo(a.episodeCount);
+      });
+      controller.add(List.unmodifiable(options));
+    }
+
+    Future<void> worker() async {
+      while (!cancelled && nextSite < sites.length) {
+        final site = sites[nextSite++];
+        final scope = CmsRequestScope(reportErrors: true);
+        scopes.add(scope);
+        try {
+          final result = await scope
+              .run(() => loadResourceOptions(title, [site], current: current))
+              .timeout(resourceTimeout);
+          if (cancelled) return;
+          options.addAll(result);
+          publish();
+        } catch (error) {
+          if (cancelled) return;
+          options.add(ResourceOption(
+            sourceId: site.id,
+            sourceName: site.name,
+            vodId: '',
+            title: title,
+            error: error is TimeoutException
+                ? '查询超时'
+                : error is CatalogueException
+                    ? error.message
+                    : '查询失败',
+          ));
+          publish();
+        } finally {
+          scope.cancel();
+          scopes.remove(scope);
+          // Let abort-trigger listeners release the previous transport before
+          // this worker starts another source.
+          await Future<void>.delayed(Duration.zero);
+        }
+      }
+    }
+
+    controller = StreamController<List<ResourceOption>>(
+      onListen: () {
+        unawaited(Future<void>(() async {
+          final workers = sites.length < resourceConcurrency
+              ? sites.length
+              : resourceConcurrency;
+          await Future.wait(List.generate(workers, (_) => worker()));
+          if (!cancelled) await controller.close();
+        }));
+      },
+      onCancel: () {
+        cancelled = true;
+        for (final scope in scopes.toList()) {
+          scope.cancel();
+        }
+      },
+    );
+    return controller.stream;
+  }
+
   Future<List<ResourceOption>> loadResourceOptions(
     String title,
     List<CmsSite> sites, {
@@ -294,13 +438,18 @@ class VodRepository {
   /// Bypass the short playback-start memo when updating an offline catalogue.
   Future<VodDetail?> latestDetail(CmsSite site, String vodId) {
     final key = '${site.id}\u0000$vodId';
-    _detailMemo.remove(key);
+    final version = _newDetailVersion(key);
+    _invalidateDetailMemo(key);
     final future = _client.fetchLatestDetail(site, vodId);
     // Share a successful fresh result with the delayed resource-option lookup.
     // Failures are deliberately not memoized.
     return future.then((detail) {
+      if (_closed || !identical(_detailVersions[key], version)) return detail;
+      _newDetailVersion(key);
+      _invalidateDetailMemo(key);
       if (detail != null) {
-        _store(_detailMemo, key, _Pending(Future.value(detail)));
+        _store(
+            _detailMemo, key, _Pending(Future.value(detail), completed: true));
       } else {
         _detailMemo.remove(key);
       }
@@ -311,8 +460,9 @@ class VodRepository {
 
 /// One memoized in-flight/complete request plus when it was issued.
 class _Pending<T> {
-  _Pending(this.future) : at = DateTime.now();
+  _Pending(this.future, {this.completed = false}) : at = DateTime.now();
 
   final Future<T> future;
+  final bool completed;
   final DateTime at;
 }

@@ -19,7 +19,7 @@ import '../data/repository.dart';
 import '../data/settings_store.dart';
 import '../data/tmdb/tmdb_repository.dart';
 import '../data/vod/cms_models.dart';
-import '../data/vod/cms_client.dart' show CatalogueException;
+import '../data/vod/cms_client.dart' show CatalogueException, CmsRequestScope;
 import '../data/vod/vod_repository.dart';
 import '../player/player_controller.dart';
 import 'config.dart';
@@ -59,6 +59,8 @@ class AppController extends ChangeNotifier {
     LiveProbeController? liveProbe,
     DownloadManager? downloads,
     DateTime Function()? clock,
+    this.resolveTimeout = const Duration(seconds: 40),
+    this.recordedSourceGrace = const Duration(milliseconds: 800),
   })  : _injectedRepo = repository,
         _clock = clock ?? DateTime.now,
         player = player ?? MockPlayerController(),
@@ -76,6 +78,8 @@ class AppController extends ChangeNotifier {
   /// Test seam: the wall clock used for progress-save throttling, so a test can
   /// simulate a slow stream open without sleeping.
   final DateTime Function() _clock;
+  final Duration resolveTimeout;
+  final Duration recordedSourceGrace;
 
   int _nowMs() => _clock().millisecondsSinceEpoch;
 
@@ -326,6 +330,37 @@ class AppController extends ChangeNotifier {
 
   // Guards stale async results when the user rapidly re-opens titles.
   int _playToken = 0;
+  int _playInvocation = 0;
+  SearchHit? _directPlayHit;
+  int _catalogueGeneration = 0;
+  final Set<CmsRequestScope> _resolutionRequests = {};
+
+  CmsRequestScope _newResolutionScope() {
+    final scope = CmsRequestScope();
+    _resolutionRequests.add(scope);
+    unawaited(scope.whenCancelled.then((_) {
+      _resolutionRequests.remove(scope);
+    }));
+    return scope;
+  }
+
+  int _beginPlaybackGeneration({bool preserveCatalogue = false}) {
+    _remoteSeekTarget = null;
+    for (final scope in _resolutionRequests.toList()) {
+      scope.cancel();
+    }
+    _resolutionRequests.clear();
+    _resourceOptionsToken++;
+    _resourceOptionsTimer?.cancel();
+    unawaited(_resourceSubscription?.cancel());
+    _resourceSubscription = null;
+    loadingResources = false;
+    if (!preserveCatalogue) _catalogueGeneration++;
+    return ++_playToken;
+  }
+
+  int? _recoveredErrorToken;
+  Duration? _remoteSeekTarget;
   int _lastSaveMs = 0;
   bool _introSkipHandled = false;
   bool _advancing = false;
@@ -724,11 +759,99 @@ class AppController extends ChangeNotifier {
 
   // --- Playback: resolve a title to a real CMS stream -----------------------
 
+  Future<VodDetail?> _lookupPlaybackDetail(CmsSite site, String vodId) async {
+    final scope = _newResolutionScope();
+    try {
+      return await Future.any<VodDetail?>([
+        scope.run(() => vodRepo.detail(site, vodId)),
+        scope.whenCancelled.then((_) => null),
+      ]).timeout(resolveTimeout);
+    } finally {
+      scope.cancel();
+    }
+  }
+
+  /// Race the historical source and title lookup under one deadline. A short
+  /// grace period keeps a healthy recorded source preferred over a fast fallback.
+  Future<VodDetail?> _resolveForPlayback(VodItem item, HistoryEntry? entry) {
+    final scope = _newResolutionScope();
+    final result = Completer<VodDetail?>();
+    final site = entry == null ? null : _siteById(entry.sourceId);
+    final hasRecorded = site != null && entry!.vodId.isNotEmpty;
+    var recordedDone = !hasRecorded;
+    var searchDone = selectedSites.isEmpty;
+    var graceExpired = !hasRecorded;
+    VodDetail? fallback;
+    Timer? grace;
+    late final Timer deadline;
+    void finish(VodDetail? detail) {
+      if (result.isCompleted) return;
+      deadline.cancel();
+      grace?.cancel();
+      result.complete(detail);
+      scope.cancel();
+    }
+
+    void considerFallback() {
+      if (fallback != null && (recordedDone || graceExpired)) {
+        finish(fallback);
+      } else if (recordedDone && searchDone) {
+        finish(null);
+      }
+    }
+
+    deadline = Timer(resolveTimeout, () {
+      if (result.isCompleted) return;
+      grace?.cancel();
+      result.completeError(TimeoutException('resource resolution'));
+      scope.cancel();
+    });
+    if (hasRecorded) {
+      grace = Timer(recordedSourceGrace, () {
+        graceExpired = true;
+        considerFallback();
+      });
+      scope
+          .run(() =>
+              Future<VodDetail?>.sync(() => vodRepo.detail(site, entry.vodId)))
+          .then((detail) {
+        recordedDone = true;
+        if (detail?.firstEpisode != null) {
+          finish(detail);
+        } else {
+          considerFallback();
+        }
+      }, onError: (Object _, StackTrace __) {
+        recordedDone = true;
+        considerFallback();
+      });
+    }
+    if (!searchDone) {
+      scope
+          .run(() => Future<VodDetail?>.sync(
+              () => vodRepo.resolveByTitle(item.title, selectedSites)))
+          .then((detail) {
+        searchDone = true;
+        fallback = detail?.firstEpisode == null ? null : detail;
+        considerFallback();
+      }, onError: (Object _, StackTrace __) {
+        searchDone = true;
+        considerFallback();
+      });
+    }
+    unawaited(scope.whenCancelled.then((_) {
+      if (!result.isCompleted) finish(null);
+    }));
+    considerFallback();
+    return result.future;
+  }
+
   /// Unified entry for BOTH category cards and search results: enter the play
   /// page, then resolve a playable CMS resource by title across [selectedSites]
   /// and auto-play the best match (resuming a saved position when available).
   Future<void> openTitle(VodItem item) async {
-    final token = ++_playToken;
+    final token = _beginPlaybackGeneration();
+    _directPlayHit = null;
 
     // 0) A cached episode takes priority. [launchFor] is episode-scoped: it
     //    only answers for the recorded episode (history) or the first episode
@@ -769,53 +892,30 @@ class AppController extends ChangeNotifier {
     speed = entry?.speed ?? 1.0;
     notifyListeners();
 
-    // 1) Prefer resuming the exact recorded resource. History is keyed by the
-    //    TMDB title but also stores the CMS reference (sourceId+vodId), so
-    //    re-entering from 播放记录 continues the *same* source rather than
-    //    re-searching by title (which could pick a different provider). Mirrors
-    //    BearTV, which keys history/progress by `id + sourceId`.
     VodDetail? detail;
-    if (entry != null && entry.vodId.isNotEmpty) {
-      final site = _siteById(entry.sourceId);
-      if (site != null) {
-        final recorded = await vodRepo.detail(site, entry.vodId);
-        if (token != _playToken) return; // superseded by a newer openTitle
-        if (recorded != null && recorded.firstEpisode != null)
-          detail = recorded;
-      }
+    try {
+      detail = await _resolveForPlayback(item, entry);
+    } on TimeoutException {
+      if (token != _playToken) return;
+      playError = '查找播放资源超时，请重试或切换资源。';
     }
-
-    // 2) Otherwise resolve the best playable resource across enabled sources.
-    //    When the network/source is unavailable, fall back to the download
-    //    snapshot so already-cached episodes still open offline.
-    if (detail == null) {
-      final sites = selectedSites;
-      if (sites.isEmpty) {
-        detail = downloads.snapshotForEntry(entry) ??
-            downloads.snapshotForItem(item.key);
-        if (detail == null) {
-          resolving = false;
-          playError = '尚未启用任何播放源，请在设置中开启或添加。';
-          await player.open(null);
-          notifyListeners();
-          return;
-        }
-      } else {
-        detail = await vodRepo.resolveByTitle(item.title, sites);
-        if (token != _playToken) return; // superseded by a newer openTitle
-        detail ??= downloads.snapshotForEntry(entry) ??
-            downloads.snapshotForItem(item.key);
-      }
-    }
+    if (token != _playToken) return;
+    detail ??= downloads.snapshotForEntry(entry) ??
+        downloads.snapshotForItem(item.key);
 
     if (detail == null || detail.firstEpisode == null) {
       resolving = false;
-      playError = '未找到「${item.title}」的可播放资源，可在设置中添加更多播放源。';
+      playError ??= selectedSites.isEmpty
+          ? '尚未启用任何播放源，请在设置中开启或添加。'
+          : '未找到「${item.title}」的可播放资源，可在设置中添加更多播放源。';
       await player.open(null);
+      if (token != _playToken) return;
       notifyListeners();
+      _scheduleResourceOptions();
       return;
     }
 
+    playError = null;
     currentDetail = detail;
     // Keep a CMS-direct item's source label in step with the resource that
     // actually resolved (title re-resolve may land on a different source).
@@ -859,7 +959,8 @@ class AppController extends ChangeNotifier {
     // backing out while it loads) must leave the saved 第N集 · mm:ss intact.
     // The record is only rewritten once the stream is ready (see [_onTick]) or
     // on a guarded exit (see [_handleBack]).
-    await _playCurrent(resumeMs: resumeMs);
+    await _playCurrent(generation: token, resumeMs: resumeMs);
+    if (token != _playToken) return;
     _scheduleResourceOptions(); // background: build the switch-resource list
   }
 
@@ -892,7 +993,8 @@ class AppController extends ChangeNotifier {
   /// shared history when this same resource was watched before, and still
   /// builds the cross-source 切换资源 list by title.
   Future<void> openCmsHit(SearchHit hit) async {
-    final token = ++_playToken;
+    final token = _beginPlaybackGeneration();
+    _directPlayHit = hit;
     final item = _cmsItemFor(hit);
     final entry = history.entryFor(item.key);
     final launch = downloads.launchFor(item: item, entry: entry);
@@ -925,7 +1027,17 @@ class AppController extends ChangeNotifier {
     notifyListeners();
 
     final site = _siteById(hit.sourceId);
-    var detail = site == null ? null : await vodRepo.detail(site, hit.vodId);
+    VodDetail? detail;
+    try {
+      detail =
+          site == null ? null : await _lookupPlaybackDetail(site, hit.vodId);
+    } on TimeoutException {
+      if (token != _playToken) return;
+      playError = '播放源响应超时，请重试或切换资源。';
+    } catch (_) {
+      if (token != _playToken) return;
+      playError = '播放源查询失败，请重试或切换资源。';
+    }
     if (token != _playToken) return; // superseded by a newer open
     // Offline / deleted source: cached episodes can still play from the
     // snapshot taken when they were queued.
@@ -933,12 +1045,15 @@ class AppController extends ChangeNotifier {
 
     if (detail == null || detail.firstEpisode == null) {
       resolving = false;
-      playError = '「${hit.title}」在该资源站暂不可用，换一个结果试试。';
+      playError ??= '「${hit.title}」在该资源站暂不可用，换一个结果试试。';
       await player.open(null);
+      if (token != _playToken) return;
       notifyListeners();
+      _scheduleResourceOptions();
       return;
     }
 
+    playError = null;
     currentDetail = detail;
     currentItem = _itemWithSource(item, detail.sourceName);
     // Resume the recorded episode by identity (index only as a fallback).
@@ -973,7 +1088,8 @@ class AppController extends ChangeNotifier {
     notifyListeners();
 
     // No history write while only opening the page — see [openTitle].
-    await _playCurrent(resumeMs: resumeMs);
+    await _playCurrent(generation: token, resumeMs: resumeMs);
+    if (token != _playToken) return;
     _scheduleResourceOptions();
   }
 
@@ -1042,8 +1158,8 @@ class AppController extends ChangeNotifier {
     }
     notifyListeners();
 
-    final playback = _playCurrent(resumeMs: resumeMs);
-    unawaited(_updateDownloadedCatalogue(playToken));
+    final playback = _playCurrent(generation: playToken, resumeMs: resumeMs);
+    unawaited(_updateDownloadedCatalogue(_catalogueGeneration));
     await playback;
     if (playToken != _playToken) return;
     _scheduleResourceOptions();
@@ -1051,12 +1167,12 @@ class AppController extends ChangeNotifier {
 
   /// Playback starts independently from disk. Only replace catalogue metadata;
   /// never open/seek/pause the player as part of this background operation.
-  Future<void> _updateDownloadedCatalogue(int token) async {
+  Future<void> _updateDownloadedCatalogue(int catalogueGeneration) async {
     final original = currentDetail;
     if (original == null) return;
     final site = _siteById(original.sourceId);
     bool isCurrent() =>
-        token == _playToken &&
+        catalogueGeneration == _catalogueGeneration &&
         page == AppPage.play &&
         identical(currentDetail, original);
     void failure(String reason) {
@@ -1136,7 +1252,8 @@ class AppController extends ChangeNotifier {
       try {
         await downloads.updateSnapshot(updated);
       } catch (_) {
-        if (token == _playToken && page == AppPage.play) {
+        if (catalogueGeneration == _catalogueGeneration &&
+            page == AppPage.play) {
           showToast('剧集已同步，但保存失败，下次进入将重新同步');
         }
       }
@@ -1157,11 +1274,24 @@ class AppController extends ChangeNotifier {
   /// catches up. Only when no local transport opens does the episode fall back
   /// to the online URL.
   Future<void> _playCurrent({
+    int? generation,
     int resumeMs = 0,
     bool autoPlay = true,
     bool allowPartial = true,
+    bool allowLocal = true,
     bool reloadDanmaku = true,
   }) async {
+    final token = generation ?? _playToken;
+    if (token != _playToken || page != AppPage.play) return;
+    final invocation = ++_playInvocation;
+    bool current() =>
+        token == _playToken &&
+        invocation == _playInvocation &&
+        page == AppPage.play;
+    if (playError != null) {
+      playError = null;
+      notifyListeners();
+    }
     _introSkipHandled = false;
     _advancing = false;
     // Not "playing" until the stream is ready AND the resume seek has landed:
@@ -1171,7 +1301,7 @@ class AppController extends ChangeNotifier {
     _lastSaveMs = _nowMs();
     final ep = _episodeAt(lineIndex, episodeIndex);
     final d = currentDetail;
-    final locals = (d == null || ep == null)
+    final locals = (!allowLocal || d == null || ep == null)
         ? const <String>[]
         : downloads.localUrlsFor(
             sourceId: d.sourceId,
@@ -1208,48 +1338,139 @@ class AppController extends ChangeNotifier {
     // queue behind the video open/seek/play calls (it used to start only after
     // `play()`, which put the match round-trips behind the stream startup).
     if (reloadDanmaku) _loadDanmakuForCurrentEpisode();
-    if (locals.isEmpty && !playingPartial) {
-      await player.open(ep?.url);
-    } else {
-      // Loopback HTTP first, then `file://`. Only when every transport fails
-      // does the episode drop back to the online stream.
-      final urls = locals.isNotEmpty ? locals : partial!.urls;
-      final wasCompleted = locals.isNotEmpty;
-      var localReady = false;
-      for (final url in urls) {
-        await player.open(url);
-        if (player.value.ready) {
-          localReady = true;
-          break;
+    try {
+      if (locals.isEmpty && !playingPartial) {
+        await player.open(ep?.url,
+            headers: _siteById(d?.sourceId ?? '')?.headers);
+        if (!current()) return;
+      } else {
+        // Loopback HTTP first, then `file://`. Only when every transport fails
+        // does the episode drop back to the online stream.
+        final urls = locals.isNotEmpty ? locals : partial!.urls;
+        final wasCompleted = locals.isNotEmpty;
+        var localReady = false;
+        for (final url in urls) {
+          await player.open(url);
+          if (!current()) return;
+          if (player.value.ready) {
+            localReady = true;
+            break;
+          }
+          debugPrint('[play] local open failed: $url');
         }
-        debugPrint('[play] local open failed: $url');
-      }
-      if (!localReady) {
-        final online = ep?.url ?? '';
-        playingFromCache = false;
-        playingPartial = false;
-        _partialTaskId = null;
-        partialPlayableMs = 0;
-        if (online.isNotEmpty) {
-          showToast(wasCompleted ? '缓存播放失败，已切换在线播放' : '缓存片段播放失败，已切换在线播放');
-          notifyListeners();
-          await player.open(online);
+        if (!localReady) {
+          final online = ep?.url ?? '';
+          playingFromCache = false;
+          playingPartial = false;
+          _partialTaskId = null;
+          partialPlayableMs = 0;
+          if (online.isNotEmpty) {
+            showToast(wasCompleted ? '缓存播放失败，已切换在线播放' : '缓存片段播放失败，已切换在线播放');
+            notifyListeners();
+            await player.open(online,
+                headers: _siteById(d?.sourceId ?? '')?.headers);
+            if (!current()) return;
+          }
+        } else if (!wasCompleted && !_partialHintShown) {
+          // One hint per session: auto-advancing through several partially
+          // downloaded episodes must not spam toasts.
+          _partialHintShown = true;
+          showToast('已缓存 ${_fmtPartial(partialPlayableMs)}，边下边播中');
         }
-      } else if (!wasCompleted && !_partialHintShown) {
-        // One hint per session: auto-advancing through several partially
-        // downloaded episodes must not spam toasts.
-        _partialHintShown = true;
-        showToast('已缓存 ${_fmtPartial(partialPlayableMs)}，边下边播中');
       }
+      if (!player.value.ready) return;
+      if (resumeMs > 0) {
+        await player.seekTo(Duration(milliseconds: resumeMs));
+        if (!current()) return;
+      }
+      // Arm progress saving only once the reported position means something.
+      if (player.value.ready) {
+        _playStarted = true;
+        _lastSaveMs = _nowMs(); // start the throttle window after the seek
+      }
+      await player.setSpeed(speed);
+      if (!current()) return;
+      if (autoPlay) {
+        await player.play();
+        if (!current()) return;
+      }
+    } catch (error) {
+      if (!current()) return;
+      _playStarted = false;
+      playError = '播放启动失败，请重试或切换资源';
+      debugPrint('[play] startup operation failed: $error');
+      notifyListeners();
     }
-    if (resumeMs > 0) await player.seekTo(Duration(milliseconds: resumeMs));
-    // Arm progress saving only once the reported position means something.
-    if (player.value.ready) {
-      _playStarted = true;
-      _lastSaveMs = _nowMs(); // start the throttle window after the seek
+  }
+
+  Future<void> retryCurrentPlayback() async {
+    if (page != AppPage.play) return;
+    if (currentDetail == null) {
+      final item = currentItem;
+      if (item != null) {
+        final returnPage = _playReturnPage;
+        final direct = _directPlayHit;
+        final opening = direct == null ? openTitle(item) : openCmsHit(direct);
+        final token = _playToken;
+        await opening;
+        if (token == _playToken) {
+          _playReturnPage = returnPage;
+          pendingSearchFocusKey =
+              returnPage == AppPage.search ? item.key : null;
+        }
+      }
+      return;
     }
-    await player.setSpeed(speed);
-    if (autoPlay) await player.play();
+    final token = _beginPlaybackGeneration(preserveCatalogue: true);
+    var resumeMs = player.value.position.inMilliseconds;
+    final entry =
+        currentItem == null ? null : history.entryFor(currentItem!.key);
+    final episode = _episodeAt(lineIndex, episodeIndex);
+    if (resumeMs == 0 &&
+        entry != null &&
+        episode != null &&
+        sameEpisode(
+            urlA: episode.url,
+            titleA: episode.title,
+            urlB: entry.episodeUrl,
+            titleB: entry.episodeTitle)) {
+      resumeMs = entry.positionMs;
+    }
+    await _playCurrent(generation: token, resumeMs: resumeMs);
+    if (token == _playToken && resourceOptions.isEmpty) {
+      _scheduleResourceOptions();
+    }
+  }
+
+  Future<void> retryNextLine() async {
+    final detail = currentDetail;
+    final episode = _episodeAt(lineIndex, episodeIndex);
+    if (page != AppPage.play || detail == null || episode == null) return;
+    for (var offset = 1; offset < detail.playLines.length; offset++) {
+      final nextLine = (lineIndex + offset) % detail.playLines.length;
+      final nextEpisode = detail.playLines[nextLine].episodes.indexWhere(
+          (candidate) => sameEpisode(
+              urlA: episode.url,
+              titleA: episode.title,
+              urlB: candidate.url,
+              titleB: candidate.title));
+      if (nextEpisode < 0) continue;
+      final resumeMs = player.value.position.inMilliseconds;
+      final token = _beginPlaybackGeneration(preserveCatalogue: true);
+      lineIndex = nextLine;
+      episodeIndex = nextEpisode;
+      notifyListeners();
+      await _playCurrent(
+          generation: token,
+          resumeMs: resumeMs,
+          allowLocal: false,
+          allowPartial: false);
+      if (token == _playToken && resourceOptions.isEmpty) {
+        _scheduleResourceOptions();
+      }
+      return;
+    }
+    showToast('其他线路没有匹配到当前剧集，请手动选择线路或资源');
   }
 
   /// `mm:ss` / `h:mm:ss` for the 边下边播 hint.
@@ -1383,7 +1604,7 @@ class AppController extends ChangeNotifier {
     final d = currentDetail;
     if (item == null || d == null || indices.isEmpty) return false;
     if (!downloads.available) {
-      showToast('本地存储不可用，无法下载');
+      showToast(downloads.storageError ?? '本地存储不可用，无法下载');
       return false;
     }
     try {
@@ -1418,7 +1639,7 @@ class AppController extends ChangeNotifier {
     final group = downloads.groupForTask(task.id);
     if (group == null) return;
     final entry = history.entryFor(task.itemKey);
-    ++_playToken; // drop a resolve still in flight for another title
+    _beginPlaybackGeneration(); // cancel a resolve for another title
     await _openFromDownload(
       task.item,
       DownloadLaunch(group: group, task: task),
@@ -1438,7 +1659,7 @@ class AppController extends ChangeNotifier {
       showToast('该资源没有可播放的剧集');
       return;
     }
-    ++_playToken; // drop a resolve still in flight for another title
+    _beginPlaybackGeneration(); // cancel a resolve for another title
     await _openFromDownload(
       group.item,
       launch,
@@ -1577,7 +1798,14 @@ class AppController extends ChangeNotifier {
   /// start-up noticeably slower on a weak network. A newer open supersedes it.
   void _scheduleResourceOptions() {
     _resourceOptionsTimer?.cancel();
+    unawaited(_resourceSubscription?.cancel());
+    _resourceSubscription = null;
     final token = ++_resourceOptionsToken;
+    if (selectedSites.isEmpty) {
+      loadingResources = false;
+      notifyListeners();
+      return;
+    }
     final playToken = _playToken;
     // Show the "正在查找其他资源…" placeholder right away; only the network
     // work is deferred.
@@ -1598,6 +1826,18 @@ class AppController extends ChangeNotifier {
 
   Timer? _resourceOptionsTimer;
   int _resourceOptionsToken = 0;
+  StreamSubscription<List<ResourceOption>>? _resourceSubscription;
+
+  void cancelResourceLookup() {
+    _resourceOptionsToken++;
+    _resourceOptionsTimer?.cancel();
+    unawaited(_resourceSubscription?.cancel());
+    _resourceSubscription = null;
+    loadingResources = false;
+    notifyListeners();
+  }
+
+  void retryResourceLookup() => _scheduleResourceOptions();
 
   List<ResourceOption> _withCurrentCatalogue(List<ResourceOption> options) {
     final detail = currentDetail;
@@ -1623,39 +1863,60 @@ class AppController extends ChangeNotifier {
   Future<void> _loadResourceOptions() async {
     final item = currentItem;
     final token = _playToken;
+    final lookupToken = ++_resourceOptionsToken;
     if (item == null) return;
     loadingResources = true;
     notifyListeners();
-    final opts = await vodRepo.loadResourceOptions(
+    await _resourceSubscription?.cancel();
+    if (token != _playToken || lookupToken != _resourceOptionsToken) return;
+    _resourceSubscription = vodRepo
+        .watchResourceOptions(
       item.title,
       selectedSites,
       current: currentDetail,
-    );
-    if (token != _playToken) return;
-    resourceOptions = _withCurrentCatalogue(opts);
-    loadingResources = false;
-    notifyListeners();
+    )
+        .listen((opts) {
+      if (token != _playToken || lookupToken != _resourceOptionsToken) return;
+      resourceOptions = _withCurrentCatalogue(opts);
+      notifyListeners();
+    }, onDone: () {
+      if (token != _playToken || lookupToken != _resourceOptionsToken) return;
+      loadingResources = false;
+      notifyListeners();
+    }, onError: (Object _) {
+      if (token != _playToken || lookupToken != _resourceOptionsToken) return;
+      loadingResources = false;
+      notifyListeners();
+    });
   }
 
   /// Jump to episode [index] on the current line (0-based).
   Future<void> selectEpisode(int index) async {
     final eps = currentEpisodes;
     if (eps.isEmpty) return;
+    final token = _beginPlaybackGeneration(preserveCatalogue: true);
     episodeIndex = index.clamp(0, eps.length - 1);
     notifyListeners();
     _persistHistory(positionMs: 0, durationMs: 0);
-    await _playCurrent(resumeMs: 0);
+    await _playCurrent(generation: token, resumeMs: 0);
+    if (token == _playToken && resourceOptions.isEmpty) {
+      _scheduleResourceOptions();
+    }
   }
 
   /// Switch to play line [index] (keeps at episode 0).
   Future<void> selectLine(int index) async {
     final d = currentDetail;
     if (d == null || index < 0 || index >= d.playLines.length) return;
+    final token = _beginPlaybackGeneration(preserveCatalogue: true);
     lineIndex = index;
     episodeIndex = 0;
     notifyListeners();
     _persistHistory(positionMs: 0, durationMs: 0);
-    await _playCurrent(resumeMs: 0);
+    await _playCurrent(generation: token, resumeMs: 0);
+    if (token == _playToken && resourceOptions.isEmpty) {
+      _scheduleResourceOptions();
+    }
   }
 
   /// Whether the current line has an episode after [episodeIndex]. Drives the
@@ -1679,13 +1940,20 @@ class AppController extends ChangeNotifier {
 
   /// Switch to another source's resource, preserving the current position.
   Future<void> switchResource(ResourceOption option) async {
-    final token = ++_playToken;
+    final token = _beginPlaybackGeneration();
     final resumeMs = player.value.position.inMilliseconds;
     var detail =
         option.key == currentDetail?.key ? currentDetail : option.detail;
     if (detail == null) {
       final site = _siteById(option.sourceId);
-      if (site != null) detail = await vodRepo.detail(site, option.vodId);
+      try {
+        if (site != null) {
+          detail = await _lookupPlaybackDetail(site, option.vodId);
+        }
+      } catch (_) {
+        if (token == _playToken) showToast('资源查询失败或超时，请换一个资源');
+        return;
+      }
     }
     if (token != _playToken) return;
     if (detail == null || detail.firstEpisode == null) {
@@ -1701,7 +1969,9 @@ class AppController extends ChangeNotifier {
     showToast('已切换到「${detail.sourceName}」');
     notifyListeners();
     _persistHistory(positionMs: resumeMs > 5000 ? resumeMs : 0);
-    await _playCurrent(resumeMs: resumeMs > 5000 ? resumeMs : 0);
+    await _playCurrent(
+        generation: token, resumeMs: resumeMs > 5000 ? resumeMs : 0);
+    if (token != _playToken) return;
     _scheduleResourceOptions();
   }
 
@@ -1752,28 +2022,80 @@ class AppController extends ChangeNotifier {
   /// downloaded prefix while in 边下边播 hands over to the online stream first.
   Future<void> seekBy(Duration delta) async {
     final v = player.value;
-    var target = v.position + delta;
+    var target = (_remoteSeekTarget ?? v.position) + delta;
     if (target < Duration.zero) target = Duration.zero;
     final limit =
         playingPartial ? Duration(milliseconds: _partialTotalMs()) : v.duration;
     if (limit > Duration.zero && target > limit) target = limit;
     if (playingPartial && target.inMilliseconds > _partialFrontierMs() - 3000) {
+      _remoteSeekTarget = null;
       await _leavePartialToOnline(seekToMs: target.inMilliseconds);
       return;
     }
+    _remoteSeekTarget = target;
     final backend = player;
-    if (backend is DeferredSeekPlayer) {
-      await (backend as DeferredSeekPlayer).seekToDeferred(target);
-    } else {
-      await backend.seekTo(target);
+    try {
+      if (backend is DeferredSeekPlayer) {
+        await (backend as DeferredSeekPlayer).seekToDeferred(target);
+      } else {
+        await backend.seekTo(target);
+      }
+    } finally {
+      if (_remoteSeekTarget == target) {
+        _remoteSeekTarget = null;
+      }
     }
   }
 
   /// Player listener: auto-skip intro/outro + throttled progress persistence.
+  Future<void> _recoverPlaybackError(int token) async {
+    final detail = currentDetail;
+    final episode = _episodeAt(lineIndex, episodeIndex);
+    if (detail == null || episode == null || token != _playToken) return;
+    final position = player.value.position.inMilliseconds;
+    if (playingFromCache || playingPartial) {
+      showToast('缓存播放中断，正在尝试在线播放');
+      await _playCurrent(
+          generation: token,
+          resumeMs: position,
+          allowLocal: false,
+          allowPartial: false);
+      return;
+    }
+    for (var i = 0; i < detail.playLines.length; i++) {
+      if (i == lineIndex) continue;
+      final index = detail.playLines[i].episodes.indexWhere((candidate) =>
+          sameEpisode(
+              urlA: episode.url,
+              titleA: episode.title,
+              urlB: candidate.url,
+              titleB: candidate.title));
+      if (index < 0) continue;
+      lineIndex = i;
+      episodeIndex = index;
+      showToast('播放中断，正在尝试「${detail.playLines[i].name}」');
+      notifyListeners();
+      await _playCurrent(
+          generation: token,
+          resumeMs: position,
+          allowLocal: false,
+          allowPartial: false);
+      return;
+    }
+    showToast('播放中断，请重试或切换资源');
+  }
+
   void _onTick() {
     if (page != AppPage.play || currentItem == null || currentDetail == null)
       return;
     final v = player.value;
+    if (v.error != null) {
+      if (_playStarted && _recoveredErrorToken != _playToken) {
+        _recoveredErrorToken = _playToken;
+        unawaited(_recoverPlaybackError(_playToken));
+      }
+      return;
+    }
     if (!v.ready || v.seeking) return;
     final pos = v.position;
     final dur = v.duration;
@@ -2105,7 +2427,7 @@ class AppController extends ChangeNotifier {
   /// whenever we leave the play page so no decoder lingers in the background and
   /// a slow title-resolve can't start playing after we've already left.
   void _stopPlayback() {
-    _playToken++; // invalidate pending openTitle/switchResource async work
+    _beginPlaybackGeneration(); // cancel pending resource queries
     _playStarted = false;
     resolving = false;
     playingFromCache = false;
@@ -2173,8 +2495,8 @@ class AppController extends ChangeNotifier {
 
   @override
   void dispose() {
+    _beginPlaybackGeneration();
     _channelPreview?.cancel();
-    _resourceOptionsTimer?.cancel();
     for (final f in _feeds.values) {
       f.dispose();
     }

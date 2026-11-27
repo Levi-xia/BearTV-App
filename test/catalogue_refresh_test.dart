@@ -54,6 +54,64 @@ void main() {
     expect((await repo.detail(site, '1'))!.firstEpisode!.title, '第1集');
     expect((await repo.latestDetail(site, '1'))!.firstEpisode!.title, '第2集');
     expect((await repo.detail(site, '1'))!.firstEpisode!.title, '第2集');
+    final otherScope = CmsRequestScope();
+    expect(
+        (await otherScope.run(() => repo.detail(site, '1')))!
+            .firstEpisode!
+            .title,
+        '第2集');
+    otherScope.cancel();
     expect(requests, 2);
+  });
+
+  test('refresh invalidates an existing scoped detail as well as shared memo',
+      () async {
+    var requests = 0;
+    final repo = VodRepository(client: CmsClient(client: MockClient((_) async {
+      requests++;
+      return http.Response(
+          '{"list":[{"vod_id":"1","vod_name":"test",'
+          '"vod_play_url":"ep$requests\$https://test/$requests.m3u8"}]}',
+          200);
+    })));
+    addTearDown(repo.close);
+    final first = CmsRequestScope();
+    final next = CmsRequestScope();
+    expect((await first.run(() => repo.detail(site, '1')))!.firstEpisode!.title,
+        'ep1');
+    await repo.latestDetail(site, '1');
+    expect((await first.run(() => repo.detail(site, '1')))!.firstEpisode!.title,
+        'ep2');
+    expect((await next.run(() => repo.detail(site, '1')))!.firstEpisode!.title,
+        'ep2');
+    expect(requests, 2);
+    first.cancel();
+    next.cancel();
+  });
+  test('an older in-flight detail cannot overwrite a refreshed catalogue',
+      () async {
+    final stale = Completer<http.Response>();
+    var requests = 0;
+    http.Response response(String episode) => http.Response(
+        '{"list":[{"vod_id":"1","vod_name":"test",'
+        '"vod_play_url":"$episode\$https://test/video.m3u8"}]}',
+        200);
+    final repo = VodRepository(client: CmsClient(client: MockClient((_) async {
+      requests++;
+      if (requests == 1) return stale.future;
+      return response('fresh');
+    })));
+    addTearDown(repo.close);
+    final scope = CmsRequestScope();
+    final pending = scope.run(() => repo.detail(site, '1'));
+    await Future<void>.delayed(Duration.zero);
+    expect((await repo.latestDetail(site, '1'))!.firstEpisode!.title, 'fresh');
+    stale.complete(response('stale'));
+    await pending;
+    expect((await scope.run(() => repo.detail(site, '1')))!.firstEpisode!.title,
+        'fresh');
+    expect((await repo.detail(site, '1'))!.firstEpisode!.title, 'fresh');
+    expect(requests, 2);
+    scope.cancel();
   });
 }

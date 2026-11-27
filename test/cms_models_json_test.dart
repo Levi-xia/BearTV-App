@@ -22,6 +22,23 @@ const _detail = VodDetail(
 );
 
 void main() {
+  test('site-specific playback headers survive JSON round trip', () {
+    const site = CmsSite(
+      id: 'a',
+      name: 'A',
+      api: 'https://a.test/api',
+      headers: {'Referer': 'https://a.test/', 'User-Agent': 'Custom UA'},
+    );
+    final restored = CmsSite.fromJson(
+        jsonDecode(jsonEncode(site.toJson())) as Map<String, dynamic>);
+    expect(restored.headers, site.headers);
+    expect(
+        CmsSite.fromJson({
+          'headers': {'bad': 1}
+        }).headers,
+        isEmpty);
+  });
+
   test('VodDetail round-trips through JSON', () {
     final decoded = VodDetail.fromJson(
         jsonDecode(jsonEncode(_detail.toJson())) as Map<String, dynamic>);

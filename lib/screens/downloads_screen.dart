@@ -190,11 +190,12 @@ class _DownloadsScreenState extends State<DownloadsScreen> {
                   ),
                 ),
                 if (!app.downloads.available)
-                  const Padding(
+                  Padding(
                     padding:
                         EdgeInsets.fromLTRB(AppDims.pad, 14, AppDims.pad, 0),
-                    child: Text('本地存储不可用，下载功能暂不可用。',
-                        style: TextStyle(
+                    child: Text(
+                        app.downloads.storageError ?? '本地存储不可用，下载功能暂不可用。',
+                        style: const TextStyle(
                             fontSize: 15,
                             color: AppColors.gold,
                             fontFamilyFallback: kFontFallback)),

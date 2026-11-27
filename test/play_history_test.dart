@@ -40,6 +40,25 @@ class FakeVod extends VodRepository {
       const [];
 }
 
+class _RacingVod extends FakeVod {
+  _RacingVod() : super({});
+  final recorded = Completer<VodDetail?>();
+  final searched = Completer<VodDetail?>();
+  int searches = 0;
+  int details = 0;
+  @override
+  Future<VodDetail?> detail(CmsSite site, String vodId) {
+    details++;
+    return recorded.future;
+  }
+
+  @override
+  Future<VodDetail?> resolveByTitle(String title, List<CmsSite> sites) {
+    searches++;
+    return searched.future;
+  }
+}
+
 /// A player whose [open] stays pending until the test releases [gate], then
 /// reports "ready" at position 0 — the same shape as a slow CMS stream in
 /// `VideoAdapter` (initialize → ready → the caller seeks to the resume point).
@@ -47,6 +66,9 @@ class GatedPlayer extends ChangeNotifier implements PlayerController {
   GatedPlayer(this.gate);
 
   final Completer<void> gate;
+  int plays = 0;
+  int speeds = 0;
+  final receivedHeaders = <Map<String, String>?>[];
   PlayerValue _value = const PlayerValue();
 
   @override
@@ -59,6 +81,7 @@ class GatedPlayer extends ChangeNotifier implements PlayerController {
 
   @override
   Future<void> open(String? url, {Map<String, String>? headers}) async {
+    receivedHeaders.add(headers);
     _set(const PlayerValue());
     if (url == null || url.isEmpty) return;
     await gate.future;
@@ -70,7 +93,10 @@ class GatedPlayer extends ChangeNotifier implements PlayerController {
       _set(_value.copyWith(position: position));
 
   @override
-  Future<void> play() async => _set(_value.copyWith(playing: true));
+  Future<void> play() async {
+    plays++;
+    _set(_value.copyWith(playing: true));
+  }
 
   @override
   Future<void> pause() async => _set(_value.copyWith(playing: false));
@@ -79,8 +105,33 @@ class GatedPlayer extends ChangeNotifier implements PlayerController {
   Future<void> togglePlay() async {}
 
   @override
-  Future<void> setSpeed(double speed) async =>
-      _set(_value.copyWith(speed: speed));
+  Future<void> setSpeed(double speed) async {
+    speeds++;
+    _set(_value.copyWith(speed: speed));
+  }
+}
+
+class _FailingStartupPlayer extends GatedPlayer {
+  _FailingStartupPlayer(this.stage) : super(Completer<void>()..complete());
+  final String stage;
+
+  @override
+  Future<void> seekTo(Duration position) async {
+    if (stage == 'seek') throw StateError('seek failed');
+    await super.seekTo(position);
+  }
+
+  @override
+  Future<void> setSpeed(double speed) async {
+    if (stage == 'speed') throw StateError('speed failed');
+    await super.setSpeed(speed);
+  }
+
+  @override
+  Future<void> play() async {
+    if (stage == 'play') throw StateError('play failed');
+    await super.play();
+  }
 }
 
 /// Controllable wall clock: progress saving is throttled to 5s of *real* time,
@@ -165,15 +216,20 @@ AppController _controller({
   Future<void>? delay,
   PlayerController? player,
   _Clock? clock,
+  VodRepository? vod,
+  Duration resolveTimeout = const Duration(seconds: 8),
+  Duration recordedSourceGrace = const Duration(milliseconds: 800),
 }) {
   final settings =
       SettingsStore(seedDefaultKey: false, store: MemoryKeyValueStore());
   return AppController(
     settings: settings,
     history: HistoryStore(),
-    vod: FakeVod({'1': _detailA, '2': _detailB}, delay: delay),
+    vod: vod ?? FakeVod({'1': _detailA, '2': _detailB}, delay: delay),
     player: player,
     clock: clock?.call,
+    resolveTimeout: resolveTimeout,
+    recordedSourceGrace: recordedSourceGrace,
   );
 }
 
@@ -200,6 +256,162 @@ final _switchToB = ResourceOption(
 );
 
 void main() {
+  for (final stage in ['seek', 'speed', 'play']) {
+    test('startup $stage failure becomes an actionable page error', () async {
+      final player = _FailingStartupPlayer(stage);
+      final c = _controller(player: player);
+      addTearDown(c.dispose);
+      await c.init();
+      await _seedSites(c);
+      c.currentItem = _item;
+      c.currentDetail = _detailA;
+      c.page = AppPage.play;
+      player._set(const PlayerValue(position: Duration(minutes: 1)));
+      await c.retryCurrentPlayback();
+      expect(c.playError, contains('播放启动失败'));
+    });
+  }
+
+  test('manual next-line recovery preserves the episode and position',
+      () async {
+    final gate = Completer<void>()..complete();
+    final player = GatedPlayer(gate);
+    final c = _controller(player: player);
+    addTearDown(c.dispose);
+    await c.init();
+    await _seedSites(c);
+    c.page = AppPage.play;
+    c.currentItem = _item;
+    c.currentDetail = VodDetail(
+      sourceId: 'a',
+      sourceName: '源A',
+      vodId: '1',
+      title: '测试剧',
+      playLines: [..._detailA.playLines, ..._detailB.playLines],
+    );
+    c.episodeIndex = 5;
+    player._set(const PlayerValue(
+        ready: true,
+        position: Duration(minutes: 10),
+        duration: Duration(minutes: 45)));
+    await c.retryNextLine();
+    expect(c.lineIndex, 1);
+    expect(c.episodeIndex, 5);
+    expect(player.value.position, const Duration(minutes: 10));
+    expect(player.value.playing, isTrue);
+  });
+
+  test('retry after resolution failure preserves return to search', () async {
+    final details = <String, VodDetail>{};
+    final c = _controller(vod: FakeVod(details));
+    addTearDown(c.dispose);
+    await c.init();
+    await _seedSites(c);
+    c.page = AppPage.search;
+    await c.openTitle(_item);
+    expect(c.playError, isNotNull);
+    details['1'] = _detailA;
+    await c.retryCurrentPlayback();
+    expect(c.playError, isNull);
+    expect(c.player.value.playing, isTrue);
+    c.backFromKey();
+    expect(c.page, AppPage.search);
+  });
+
+  test('title fallback starts in parallel and wins after the recorded grace',
+      () async {
+    final vod = _RacingVod();
+    final c = _controller(
+        vod: vod, recordedSourceGrace: const Duration(milliseconds: 10));
+    addTearDown(c.dispose);
+    await c.init();
+    await _seedSites(c);
+    c.history.put(_saved);
+    final opening = c.openTitle(_item);
+    expect(vod.details, 1);
+    expect(vod.searches, 1);
+    vod.searched.complete(_detailB);
+    await opening;
+    expect(c.currentDetail!.key, _detailB.key);
+    vod.recorded.complete(_detailA);
+    await pumpEventQueue();
+    expect(c.currentDetail!.key, _detailB.key);
+  });
+
+  test('healthy recorded source wins within the preference window', () async {
+    final vod = _RacingVod();
+    final c = _controller(vod: vod);
+    addTearDown(c.dispose);
+    await c.init();
+    await _seedSites(c);
+    c.history.put(_saved);
+    final opening = c.openTitle(_item);
+    vod.searched.complete(_detailB);
+    vod.recorded.complete(_detailA);
+    await opening;
+    expect(c.currentDetail!.key, _detailA.key);
+    expect(c.player.value.position.inMilliseconds, _saved.positionMs);
+  });
+
+  test('one total deadline ends resolution and ignores late resources',
+      () async {
+    final vod = _RacingVod();
+    final c =
+        _controller(vod: vod, resolveTimeout: const Duration(milliseconds: 20));
+    addTearDown(c.dispose);
+    await c.init();
+    await _seedSites(c);
+    c.history.put(_saved);
+    await c.openTitle(_item);
+    expect(c.resolving, isFalse);
+    expect(c.playError, contains('超时'));
+    vod.recorded.complete(_detailA);
+    vod.searched.complete(_detailB);
+    await pumpEventQueue();
+    expect(c.currentDetail, isNull);
+    expect(c.playError, contains('超时'));
+    expect(c.history.entryFor(_item.key)!.positionMs, _saved.positionMs);
+  });
+
+  test('rapid episode selection stops old continuation after open', () async {
+    final gate = Completer<void>();
+    final player = GatedPlayer(gate);
+    final c = _controller(player: player);
+    addTearDown(c.dispose);
+    await c.init();
+    await _seedSites(c);
+    c.currentItem = _item;
+    c.currentDetail = _detailA;
+    c.page = AppPage.play;
+    final first = c.selectEpisode(3);
+    final latest = c.selectEpisode(8);
+    gate.complete();
+    await Future.wait([first, latest]);
+    expect(c.episodeIndex, 8);
+    expect(player.plays, 1);
+    expect(player.speeds, 1);
+  });
+
+  test('configured playback headers reach the stream opener', () async {
+    final gate = Completer<void>()..complete();
+    final player = GatedPlayer(gate);
+    final c = _controller(player: player);
+    addTearDown(c.dispose);
+    await c.init();
+    await c.settings.setCmsSites([
+      const CmsSite(
+          id: 'a',
+          name: 'A',
+          api: 'https://a.test/api',
+          headers: {'Referer': 'https://a.test/watch'}),
+    ]);
+    c.currentItem = _item;
+    c.currentDetail = _detailA;
+    c.page = AppPage.play;
+    await c.selectEpisode(0);
+    expect(player.receivedHeaders.single, {'Referer': 'https://a.test/watch'});
+  });
+
   test('backing out mid-resolve keeps the saved record', () async {
     final gate = Completer<void>();
     final c = _controller(delay: gate.future);
